@@ -1,30 +1,67 @@
 #!/usr/bin/env bash
-# Download the openai/tunnel-client binary into ./bin (self-contained; not committed).
-# Re-run after cloning, or after bumping VERSION.
+# Install a pinned OpenAI tunnel-client release into ./bin and verify its
+# published SHA-256 checksum. Override the pin with TUNNEL_CLIENT_VERSION=vX.Y.Z.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="v0.0.11"   # latest: https://github.com/openai/tunnel-client/releases/latest
+VERSION="${TUNNEL_CLIENT_VERSION:-v0.0.11}"
+BASE_URL="https://github.com/openai/tunnel-client/releases/download/${VERSION}"
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"          # darwin | linux
+for command in curl unzip; do
+	if ! command -v "$command" >/dev/null 2>&1; then
+		echo "Required command not found: $command" >&2
+		exit 1
+	fi
+done
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 case "$ARCH" in
-  arm64|aarch64) ARCH="arm64" ;;
-  x86_64|amd64)  ARCH="amd64" ;;
-  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+	arm64|aarch64) ARCH="arm64" ;;
+	x86_64|amd64) ARCH="amd64" ;;
+	*) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 case "$OS" in
-  darwin|linux) ;;
-  *) echo "Unsupported OS: $OS (this installer handles darwin/linux)" >&2; exit 1 ;;
+	darwin|linux) ;;
+	*) echo "Unsupported OS: $OS (installer supports macOS and Linux)" >&2; exit 1 ;;
 esac
 
-mkdir -p bin
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		echo "Need sha256sum or shasum to verify tunnel-client" >&2
+		return 1
+	fi
+}
+
 ASSET="tunnel-client-${VERSION}-${OS}-${ARCH}.zip"
-URL="https://github.com/openai/tunnel-client/releases/download/${VERSION}/${ASSET}"
-echo "Downloading $URL"
-curl -fsSL -o "bin/$ASSET" "$URL"
-unzip -o -j "bin/$ASSET" tunnel-client -d bin/ >/dev/null
-rm -f "bin/$ASSET"
-chmod +x bin/tunnel-client
-echo "Installed tunnel-client $VERSION -> $(pwd)/bin/tunnel-client"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+echo "Downloading tunnel-client ${VERSION} (${OS}/${ARCH})"
+curl -fsSL -o "$TMP/$ASSET" "$BASE_URL/$ASSET"
+curl -fsSL -o "$TMP/SHA256SUMS.txt" "$BASE_URL/SHA256SUMS.txt"
+
+EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TMP/SHA256SUMS.txt")"
+if [ -z "$EXPECTED" ]; then
+	echo "No checksum published for $ASSET" >&2
+	exit 1
+fi
+ACTUAL="$(sha256_file "$TMP/$ASSET")"
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+	echo "Checksum mismatch for $ASSET" >&2
+	echo "expected: $EXPECTED" >&2
+	echo "actual:   $ACTUAL" >&2
+	exit 1
+fi
+
+echo "Checksum verified: $ACTUAL"
+unzip -q -j "$TMP/$ASSET" tunnel-client -d "$TMP/unpacked"
+mkdir -p bin
+install -m 0755 "$TMP/unpacked/tunnel-client" bin/tunnel-client
+
+echo "Installed -> $(pwd)/bin/tunnel-client"
 bin/tunnel-client --version

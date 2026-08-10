@@ -1,179 +1,262 @@
 # pi-as-mcp
 
-Expose [pi](https://github.com/earendil-works/pi)'s core coding tools — **read**, **write**, **edit**, **bash** — as an [MCP](https://modelcontextprotocol.io) server over stdio. Designed so a desktop client (ChatGPT, Claude Desktop, Cursor, …) can read and modify files and run shell commands on your machine using pi's actual tool implementations.
+Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio.
 
-The agent loop is out of scope. This server only bridges tool calls to pi's tool definitions — nothing more.
+The bridge deliberately does not include pi's agent loop. Your MCP client remains the agent; pi-as-mcp supplies pi's actual tool implementations.
+
+## Why
+
+A capable MCP client does not need a large bespoke coding API. Pi's four-tool interface already provides the useful primitives:
+
+- `read` — read text files and images
+- `write` — create or replace files
+- `edit` — exact-text edits
+- `bash` — run shell commands
+
+That is enough for repository inspection, search, git, builds, tests, formatters, compilers, and essentially any other local development workflow available from the shell.
 
 ## How it works
 
-It depends on the published [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) package and wraps its four `create*ToolDefinition` factories as MCP tools. The mapping is thin because pi's tool contract is nearly identical to MCP's:
+pi-as-mcp depends on the published `@earendil-works/pi-coding-agent` package and creates pi's built-in tool definitions directly:
 
-| pi `ToolDefinition`                    | MCP                                            |
-| -------------------------------------- | ---------------------------------------------- |
-| `parameters` (TypeBox schema)          | `inputSchema` — TypeBox *is* JSON Schema (a JSON round-trip strips TypeBox's non-enumerable symbol metadata) |
-| `execute` → `{content: (Text\|Image)[]}` | MCP content blocks (`{type:"text",text}` / `{type:"image",data,mimeType}`) are structurally identical |
-| `execute(id, params, signal, …)`       | the client handler's `extra.signal` is passed straight in, so **MCP cancellation kills pi's bash process tree** |
-| thrown error                           | `{content:[{type:"text",…}], isError:true}`    |
+```text
+MCP client
+   │
+   │ tools/list + tools/call
+   ▼
+pi-as-mcp
+   │
+   ├── createReadToolDefinition(cwd)
+   ├── createWriteToolDefinition(cwd)
+   ├── createEditToolDefinition(cwd)
+   └── createBashToolDefinition(cwd)
+            │
+            ▼
+       local machine
+```
 
-No reimplementation, no shims — it's pi's tools.
+The adapter is intentionally thin:
+
+- Pi's TypeBox parameter schemas are advertised as MCP JSON Schema and validated before execution.
+- Pi's text/image results are normalized into MCP content blocks.
+- MCP cancellation is passed into pi's tool execution; for `bash`, pi terminates the spawned process tree.
+- Tool errors are returned as MCP tool errors rather than crashing the server.
+- MCP annotations describe read-only, destructive, idempotent, and open-world behavior to clients.
+
+There is no tool reimplementation.
 
 ## Requirements
 
-- Node.js **≥ 22.19** (matches pi's engine requirement)
+- Node.js **22.19.0 or newer**
 
-## Install & build
+## Install from source
 
 ```bash
+git clone https://github.com/kaikozlov/pi-as-mcp.git
+cd pi-as-mcp
 npm install
-npm run build        # tsc -> dist/, sets the executable bit on dist/index.js
+npm run build
 ```
 
-## Usage
+Run the server over stdio:
 
 ```bash
-# Defaults: cwd = process working directory; all four tools enabled.
 npm start
-# equivalently:
+```
+
+or:
+
+```bash
 node dist/index.js
 ```
 
-### Flags
+## Configuration
 
-| Flag               | Description                                                                 |
-| ------------------ | --------------------------------------------------------------------------- |
-| `-C, --cwd <dir>`  | Working directory tools resolve relative paths against. Default: `$PI_MCP_CWD`, or the process cwd. |
-| `-T, --tools <list>` | Comma-separated subset of `read,write,edit,bash`. Default: all four.      |
-| `-h, --help`       | Show help.                                                                  |
+```text
+Usage: pi-mcp [--cwd <dir>] [--tools <list>]
 
-```bash
-node dist/index.js --cwd ~/dev/myproject --tools read,bash
+-C, --cwd <dir>       Base directory for relative paths
+-T, --tools <list>    Comma-separated subset of read,write,edit,bash
+-V, --version         Print the package version
+-h, --help            Show help
 ```
 
-## Client configuration
+The same defaults can be provided through environment variables:
 
-Add the server to your MCP client's config. The `cwd` you set (or pass via `--cwd`) is where relative paths resolve.
+```bash
+export PI_MCP_CWD="$HOME/dev"
+export PI_MCP_TOOLS="read,write,edit,bash"
+node dist/index.js
+```
 
-**ChatGPT / Claude Desktop / generic stdio client:**
+CLI flags override the corresponding environment defaults.
+
+`PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
+
+For a persistent coding workbench, using a broader development root is often more useful than binding the server to one repository:
+
+```bash
+PI_MCP_CWD="$HOME/dev"
+```
+
+Then the client can work across repositories without restarting the MCP server merely to change the base directory.
+
+## Generic stdio MCP client
+
+Point the client at the built server and choose the process working directory or pass `--cwd` explicitly:
 
 ```jsonc
 {
   "mcpServers": {
     "pi": {
       "command": "node",
-      "args": ["/absolute/path/to/pi-as-mcp/dist/index.js"],
-      "cwd": "/absolute/path/to/your/project"
+      "args": [
+        "/absolute/path/to/pi-as-mcp/dist/index.js",
+        "--cwd",
+        "/absolute/path/to/dev"
+      ]
     }
   }
 }
 ```
 
-To expose only a subset, add `--tools` to `args`, e.g. `["…/dist/index.js", "--tools", "read,bash"]`.
+To expose only read and shell access, for example:
 
-## Connect to ChatGPT via OpenAI Secure MCP Tunnel
+```text
+--tools read,bash
+```
 
-ChatGPT can't reach a stdio server on your laptop directly. OpenAI's **Secure MCP Tunnel** solves this: `tunnel-client` runs inside your network, opens an **outbound-only** HTTPS path to an OpenAI-hosted endpoint, and forwards JSON-RPC to your local stdio MCP server. No inbound ports, no public endpoint. See the [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+## ChatGPT via OpenAI Secure MCP Tunnel
 
-pi-as-mcp is a stdio server, so it slots straight into `tunnel-client`'s stdio channel — no HTTP wrapper needed.
+ChatGPT cannot directly spawn a stdio MCP server on your laptop. OpenAI's Secure MCP Tunnel runs locally, establishes an outbound connection to OpenAI, and forwards MCP traffic to the stdio server without requiring an inbound port or public MCP endpoint.
 
-### Setup (everything lives in this repo)
+This repository includes a small repo-local tunnel setup.
 
-1. **Prerequisites** (OpenAI account side — [Platform settings](https://platform.openai.com/settings/organization/tunnels)):
-   - Create a tunnel → copy its `tunnel_id`.
-   - Create a **runtime** API key (`CONTROL_PLANE_API_KEY`). Don't use an admin key for the daemon.
-   - Enable ChatGPT **developer mode** (Settings → Security and login) and **associate the tunnel with your ChatGPT workspace** (a tunnel linked only to a Platform org won't appear in ChatGPT).
+### 1. Build pi-as-mcp
 
-2. **Install `tunnel-client` into the repo** (downloads `bin/tunnel-client`, gitignored):
-   ```bash
-   ./scripts/tunnel-install.sh
-   ```
+```bash
+npm install
+npm run build
+```
 
-3. **Add your local config** to a gitignored env file (the profile is already committed, repo-relative, with no secrets or per-user settings):
-   ```bash
-   cp tunnel/.env.example tunnel/.env
-   $EDITOR tunnel/.env     # tunnel id, runtime key, and PI_MCP_CWD (the dir pi-as-mcp operates in)
-   ```
-   `PI_MCP_CWD` defaults to `./sandbox` (a safe test target) — point it at your real project to let ChatGPT work there.
+### 2. Create the OpenAI tunnel and runtime key
 
-4. **Validate, then run**:
-   ```bash
-   ./scripts/tunnel.sh doctor --explain    # static config check (profile, command, node)
-   ./scripts/tunnel.sh run                 # foreground daemon; leave it running
-   ```
-   Open `http://127.0.0.1:8080/ui` to confirm the client is healthy/ready. (`doctor` is static validation for stdio — it doesn't hit OpenAI or spawn pi-as-mcp; the real auth + live MCP handshake happen at `run` time.) The daemon must stay running for connector discovery and every tool call.
+Create a tunnel in the OpenAI Platform, associate it with the ChatGPT workspace you intend to use, and create a **runtime** API key for the tunnel client.
 
-5. **Connect from ChatGPT**: [ChatGPT Plugins](https://chatgpt.com/plugins) → create a developer-mode app → **Connection: Tunnel** → select your tunnel.
+### 3. Install `tunnel-client`
 
-### Gotchas
+```bash
+./scripts/tunnel-install.sh
+```
 
-- **Switching projects = edit `PI_MCP_CWD`, not the profile.** The cwd pi-as-mcp operates in is read from `$PI_MCP_CWD` in `tunnel/.env` (gitignored), not baked into [`tunnel/profile.yaml`](tunnel/profile.yaml) — so the committed profile never needs editing. The wrapper cd's to the repo root before launching, so the `node ./dist/index.js` path resolves repo-relative and `node` is found via PATH. (Under `launchd`/`systemd` use an absolute node path, since PATH is minimal.)
-- **`bash` has no default timeout.** We verified cancellation propagates over a *direct* stdio connection, but whether the tunnel forwards mid-request cancellation notifications isn't guaranteed. If a model cancels a long `bash` call, it may run to completion server-side — prefer passing `timeout` on open-ended commands.
+The installer downloads the pinned OpenAI `tunnel-client` release for macOS/Linux and verifies it against that release's published SHA-256 checksum before installing it to `bin/tunnel-client`.
 
-### ⚠️ Security: this is a remote shell on the tunnel host
+To deliberately install another release:
 
-Exposing pi-as-mcp through the tunnel gives ChatGPT **read/write/edit/bash on the host running `tunnel-client`** — unsandboxed, with absolute paths honored anywhere on disk (see [Security](#security)). Treat it as granting a shell to whoever can drive that ChatGPT app. Recommended:
+```bash
+TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
+```
 
-- Run `tunnel-client` + pi-as-mcp on a **dedicated VM/container/throwaway account**, not your primary workstation (the tunnel docs' Docker/Kubernetes sidecar pattern).
-- Restrict to read-only with `--tools read` if you only need ChatGPT to inspect files.
-- `--cwd` is **not** a sandbox — it only affects relative-path resolution.
+### 4. Create the local tunnel environment
 
-## Tools
+```bash
+install -m 600 tunnel/.env.example tunnel/.env
+$EDITOR tunnel/.env
+```
 
-All paths may be relative (resolved against `--cwd`) or absolute. Line/byte truncation and temp-file spillover behavior are pi's defaults.
+Set at least:
 
-### `read`
-Read a file's contents. Text files are truncated to pi's line/byte limits; images (jpg/png/gif/webp/bmp) are returned as image content.
+```bash
+PI_MCP_CWD="$HOME/dev"
+CONTROL_PLANE_TUNNEL_ID=tunnel_...
+CONTROL_PLANE_API_KEY=sk_...
+```
 
-| Param     | Type     | Description                                  |
-| --------- | -------- | -------------------------------------------- |
-| `path`    | string   | Path to the file (relative or absolute).     |
-| `offset`  | number?  | 1-indexed line to start reading from.        |
-| `limit`   | number?  | Maximum number of lines to read.             |
+Optionally restrict the exposed tools:
 
-### `write`
-Create or overwrite a file.
+```bash
+PI_MCP_TOOLS=read,bash
+```
 
-| Param     | Type     | Description                              |
-| --------- | -------- | ---------------------------------------- |
-| `path`    | string   | Path to the file (relative or absolute). |
-| `content` | string   | Content to write.                        |
+`tunnel/.env` is gitignored. `scripts/tunnel.sh` also forces it to mode `0600` before loading credentials.
 
-### `edit`
-Make targeted exact-text replacements in a file. Each `edits[].oldText` must match a unique, non-overlapping region of the **original** file (edits are matched against the original, not applied incrementally).
+### 5. Validate and run
 
-| Param   | Type                              | Description            |
-| ------- | --------------------------------- | ---------------------- |
-| `path`  | string                            | Path to the file.      |
-| `edits` | `{oldText,newText}[]`             | One or more replacements. |
+```bash
+./scripts/tunnel.sh doctor --explain
+./scripts/tunnel.sh run
+```
 
-### `bash`
-Execute a shell command in the working directory. Streams stdout+stderr; output is truncated to pi's last-N-lines / byte limits and spilled to a temp file when truncated. Non-zero exit is surfaced as `isError: true`.
+For a stdio MCP target, `doctor` checks the local configuration, command, credentials presence, and health-listener availability, but it does **not** probe the stdio MCP process or establish the real tunnel session. Those happen when `run` starts the daemon. If another tunnel-client is already running on the configured health port, `doctor` will report that port as busy.
 
-| Param     | Type     | Description                                         |
-| --------- | -------- | --------------------------------------------------- |
-| `command` | string   | Bash command to execute.                            |
-| `timeout` | number?  | Timeout in seconds (optional; no default timeout).  |
+The local tunnel admin UI is configured at:
+
+```text
+http://127.0.0.1:8080/ui
+```
+
+Leave the daemon running while ChatGPT is using the MCP app. In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and select the associated tunnel.
+
+Changing `PI_MCP_CWD` or `PI_MCP_TOOLS` requires restarting `tunnel-client` because the MCP subprocess receives those variables when it starts.
 
 ## Security
 
-These are pi's **unsandboxed** tools. Relative paths resolve against `--cwd`, but **absolute paths anywhere on the filesystem are honored**, and `bash` runs arbitrary commands — exactly as pi itself does. Configure the server and grant client access accordingly. If you need path confinement, that is a separate layer to add; pi's tools do not provide it.
+**This server provides local code execution by design.**
+
+Pi's tools are unsandboxed:
+
+- `read`, `write`, and `edit` accept absolute filesystem paths.
+- `bash` executes arbitrary shell commands with the permissions of the pi-as-mcp process.
+- `--cwd` does not confine access.
+- A tunnel makes those capabilities remotely invokable by the connected MCP client.
+
+Treat a write-capable tunnel as remote shell access to the account running it. Do not expose credentials, SSH material, browser profiles, or other sensitive host state unless you intend the MCP client to be able to access them.
+
+For stronger isolation, run pi-as-mcp and the tunnel client inside a dedicated VM, container, or restricted OS account. For inspection-only workflows, expose only `read`; for shell-assisted inspection, `read,bash` is a narrower surface than all four tools.
+
+MCP tool annotations are advisory metadata for clients, not an authorization boundary.
 
 ## Development
 
 ```bash
-npm run typecheck       # tsc --noEmit
-npm run smoke           # end-to-end: spawn server over stdio, exercise all four tools
-npm run smoke:cancel    # verify MCP cancellation propagates to pi's bash (kills the process tree)
+npm run typecheck
+npm run build
+npm run smoke
+npm run smoke:cancel
+npm test
 ```
 
-Source layout:
+`npm test` runs typechecking, a clean build, the protocol smoke suite, and the cancellation test.
 
-```
+The smoke suite exercises:
+
+- MCP tool discovery and annotations
+- text and image reads
+- write/edit/bash behavior
+- argument validation and tool error paths
+- CLI and environment configuration
+- tool subsets
+
+The cancellation test starts a long-lived bash command, aborts the MCP request, and verifies that pi kills the process tree rather than leaving it running in the background.
+
+CI runs the suite at the minimum supported Node version and on current Node.
+
+### Source layout
+
+```text
 src/
-  tools.ts    # pi tool factories -> PiTool[] + schema/annotation helpers
-  index.ts    # MCP Server (stdio): tools/list + tools/call handlers, CLI parsing
+  index.ts             MCP stdio server, CLI/config, validation, dispatch
+  tools.ts             pi tool factories and MCP annotations
 scripts/
-  smoke.mjs   # protocol-level smoke test (read/write/edit/bash + error paths)
-  cancel.mjs  # cancellation-propagation test
+  smoke.mjs            protocol-level smoke tests
+  cancel.mjs           cancellation/process-tree test
+  tunnel-install.sh    checksum-verified tunnel-client installer
+  tunnel.sh            repo-local tunnel-client wrapper
+tunnel/
+  .env.example         local configuration template
+  profile.yaml         OpenAI Secure MCP Tunnel profile
+sandbox/
+  ...                  throwaway default tunnel workspace
 ```
 
 ## License

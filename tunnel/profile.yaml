@@ -1,16 +1,15 @@
-# tunnel-client profile (self-contained, repo-relative, no secrets, no per-user
-# config). The tunnel id, API key, AND the working directory pi-as-mcp operates
-# in all come from tunnel/.env (gitignored), sourced by scripts/tunnel.sh:
-#   CONTROL_PLANE_TUNNEL_ID   -> control_plane.tunnel_id
-#   CONTROL_PLANE_API_KEY     -> control_plane.api_key
-#   PI_MCP_CWD                -> pi-as-mcp working directory (default: ./sandbox)
-#
-# Run via ./scripts/tunnel.sh (doctor|run).
+# OpenAI Secure MCP Tunnel profile for the repo-local pi-as-mcp server.
+# Secrets and local working-directory settings live in tunnel/.env (gitignored)
+# and are exported by scripts/tunnel.sh before tunnel-client starts:
+#   CONTROL_PLANE_TUNNEL_ID -> control_plane.tunnel_id
+#   CONTROL_PLANE_API_KEY   -> control_plane.api_key
+#   PI_MCP_CWD              -> pi-as-mcp base working directory
+#   PI_MCP_TOOLS            -> optional tool subset
 config_version: 1
 control_plane:
   base_url: "https://api.openai.com"
 health:
-  listen_addr: "127.0.0.1:8080"   # admin UI at http://127.0.0.1:8080/ui
+  listen_addr: "127.0.0.1:8080"
 admin_ui:
   open_browser: false
 log:
@@ -19,9 +18,6 @@ log:
 mcp:
   commands:
     - channel: main
-      # tunnel-client spawns this from the repo root (scripts/tunnel.sh cd's
-      # there), so the dist path resolves repo-relative. The cwd pi-as-mcp
-      # operates in is NOT set here — it comes from $PI_MCP_CWD (see tunnel/.env),
-      # defaulting to ./sandbox so you can switch projects without editing this
-      # committed file. Append "--tools read" for a read-only smoke test.
+      # scripts/tunnel.sh runs tunnel-client from the repository root, so this
+      # path is stable. pi-as-mcp reads PI_MCP_CWD / PI_MCP_TOOLS from the env.
       command: "node ./dist/index.js"

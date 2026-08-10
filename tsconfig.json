@@ -6,7 +6,6 @@
     "moduleResolution": "NodeNext",
     "outDir": "./dist",
     "rootDir": "./src",
-    "declaration": true,
     "sourceMap": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
