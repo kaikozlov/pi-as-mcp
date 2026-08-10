@@ -69,6 +69,54 @@ Add the server to your MCP client's config. The `cwd` you set (or pass via `--cw
 
 To expose only a subset, add `--tools` to `args`, e.g. `["…/dist/index.js", "--tools", "read,bash"]`.
 
+## Connect to ChatGPT via OpenAI Secure MCP Tunnel
+
+ChatGPT can't reach a stdio server on your laptop directly. OpenAI's **Secure MCP Tunnel** solves this: `tunnel-client` runs inside your network, opens an **outbound-only** HTTPS path to an OpenAI-hosted endpoint, and forwards JSON-RPC to your local stdio MCP server. No inbound ports, no public endpoint. See the [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+
+pi-as-mcp is a stdio server, so it slots straight into `tunnel-client`'s stdio channel — no HTTP wrapper needed.
+
+### Setup
+
+1. **Prerequisites** (all in [Platform settings](https://platform.openai.com/settings/organization/tunnels)):
+   - Create a tunnel → copy its `tunnel_id`.
+   - Create a **runtime** API key (`CONTROL_PLANE_API_KEY`). Don't use an admin key for the daemon.
+   - Enable ChatGPT **developer mode** (Settings → Security and login) and **associate the tunnel with your ChatGPT workspace** (a tunnel linked only to a Platform org won't appear in ChatGPT).
+
+2. **Install tunnel-client** from the [latest release](https://github.com/openai/tunnel-client/releases/latest) (or the download link in Platform tunnel settings).
+
+3. **Create a profile** pointing at pi-as-mcp over stdio:
+   ```bash
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile pi-stdio \
+     --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
+     --mcp-command "node /absolute/path/to/pi-as-mcp/dist/index.js --cwd /absolute/path/to/your/project"
+   ```
+   The `--mcp-command` becomes the `mcp.commands` entry on channel `main`. An equivalent profile file is in [`examples/tunnel-client-pi-stdio.yaml`](examples/tunnel-client-pi-stdio.yaml).
+
+4. **Validate & run**:
+   ```bash
+   tunnel-client doctor --profile pi-stdio --explain   # checks auth + spawns pi-as-mcp for an MCP handshake
+   tunnel-client run    --profile pi-stdio             # foreground daemon; keep it running
+   ```
+   Open `http://127.0.0.1:8080/ui` to confirm the client is healthy/ready. The daemon must stay running for connector discovery and every tool call.
+
+5. **Connect from ChatGPT**: [ChatGPT Plugins](https://chatgpt.com/plugins) → create a developer-mode app → **Connection: Tunnel** → select your tunnel.
+
+### Gotchas
+
+- **Always pass `--cwd`.** `tunnel-client` spawns pi-as-mcp with *its own* working directory (there's no per-child cwd flag), so without `--cwd` relative paths resolve unpredictably. (`PI_MCP_CWD` also works, since the child inherits tunnel-client's env.)
+- **`node` on PATH.** The child inherits tunnel-client's environment. In a shell that's fine; under `launchd`/`systemd` you may need the absolute node path (`$(which node)`) since PATH is minimal.
+- **`bash` has no default timeout.** We verified cancellation propagates over a *direct* stdio connection, but whether the tunnel forwards mid-request cancellation notifications isn't guaranteed. If a model cancels a long `bash` call, it may run to completion server-side — prefer passing `timeout` on open-ended commands.
+
+### ⚠️ Security: this is a remote shell on the tunnel host
+
+Exposing pi-as-mcp through the tunnel gives ChatGPT **read/write/edit/bash on the host running `tunnel-client`** — unsandboxed, with absolute paths honored anywhere on disk (see [Security](#security)). Treat it as granting a shell to whoever can drive that ChatGPT app. Recommended:
+
+- Run `tunnel-client` + pi-as-mcp on a **dedicated VM/container/throwaway account**, not your primary workstation (the tunnel docs' Docker/Kubernetes sidecar pattern).
+- Restrict to read-only with `--tools read` if you only need ChatGPT to inspect files.
+- `--cwd` is **not** a sandbox — it only affects relative-path resolution.
+
 ## Tools
 
 All paths may be relative (resolved against `--cwd`) or absolute. Line/byte truncation and temp-file spillover behavior are pi's defaults.
