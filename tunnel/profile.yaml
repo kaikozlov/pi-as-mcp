@@ -1,0 +1,26 @@
+# tunnel-client profile (self-contained, repo-relative, no secrets).
+#
+# The tunnel id and API key are NOT in this file — they come from tunnel/.env
+# (gitignored) via env-var precedence:
+#   CONTROL_PLANE_TUNNEL_ID   -> control_plane.tunnel_id
+#   CONTROL_PLANE_API_KEY     -> control_plane.api_key
+#
+# Run via ./scripts/tunnel.sh (doctor|run), which sources tunnel/.env and
+# passes --profile-file for you.
+config_version: 1
+control_plane:
+  base_url: "https://api.openai.com"
+health:
+  listen_addr: "127.0.0.1:8080"   # admin UI at http://127.0.0.1:8080/ui
+admin_ui:
+  open_browser: false
+log:
+  level: info
+  format: json
+mcp:
+  commands:
+    - channel: main
+      # tunnel-client spawns this from the repo root (scripts/tunnel.sh cd's
+      # there), so repo-relative paths resolve. `node` is found via PATH.
+      #   --tools read   restrict to read-only for a safe smoke test
+      command: "node ./dist/index.js --cwd ./sandbox"
