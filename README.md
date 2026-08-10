@@ -87,11 +87,12 @@ pi-as-mcp is a stdio server, so it slots straight into `tunnel-client`'s stdio c
    ./scripts/tunnel-install.sh
    ```
 
-3. **Add your secrets** to a gitignored env file (the profile is already committed, repo-relative, with no secrets):
+3. **Add your local config** to a gitignored env file (the profile is already committed, repo-relative, with no secrets or per-user settings):
    ```bash
    cp tunnel/.env.example tunnel/.env
-   $EDITOR tunnel/.env     # fill in CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY
+   $EDITOR tunnel/.env     # tunnel id, runtime key, and PI_MCP_CWD (the dir pi-as-mcp operates in)
    ```
+   `PI_MCP_CWD` defaults to `./sandbox` (a safe test target) — point it at your real project to let ChatGPT work there.
 
 4. **Validate, then run**:
    ```bash
@@ -104,8 +105,7 @@ pi-as-mcp is a stdio server, so it slots straight into `tunnel-client`'s stdio c
 
 ### Gotchas
 
-- **The profile runs from the repo root.** `scripts/tunnel.sh` cd's to the repo root before launching `tunnel-client`, so the stdio child inherits that CWD and `command: "node ./dist/index.js --cwd ./sandbox"` resolves repo-relative. To target a real project instead of `sandbox/`, edit the `command:` line in [`tunnel/profile.yaml`](tunnel/profile.yaml).
-- **`node` on PATH.** The child inherits the shell environment. The wrapper is launched from your shell, so this is fine interactively; under `launchd`/`systemd` you'd need an absolute node path since PATH is minimal.
+- **Switching projects = edit `PI_MCP_CWD`, not the profile.** The cwd pi-as-mcp operates in is read from `$PI_MCP_CWD` in `tunnel/.env` (gitignored), not baked into [`tunnel/profile.yaml`](tunnel/profile.yaml) — so the committed profile never needs editing. The wrapper cd's to the repo root before launching, so the `node ./dist/index.js` path resolves repo-relative and `node` is found via PATH. (Under `launchd`/`systemd` use an absolute node path, since PATH is minimal.)
 - **`bash` has no default timeout.** We verified cancellation propagates over a *direct* stdio connection, but whether the tunnel forwards mid-request cancellation notifications isn't guaranteed. If a model cancels a long `bash` call, it may run to completion server-side — prefer passing `timeout` on open-ended commands.
 
 ### ⚠️ Security: this is a remote shell on the tunnel host
