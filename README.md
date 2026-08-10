@@ -49,28 +49,67 @@ There is no tool reimplementation.
 
 - Node.js **22.19.0 or newer**
 
-## Install from source
+## ChatGPT quick start
+
+The only OpenAI-side prerequisites are a Secure MCP Tunnel and a runtime API key. Create those in the OpenAI Platform, and associate the tunnel with the ChatGPT workspace you intend to use.
+
+Then clone the repo and run the setup wizard:
 
 ```bash
 git clone https://github.com/kaikozlov/pi-as-mcp.git
 cd pi-as-mcp
-npm install
-npm run build
+npm run setup
 ```
 
-Run the server over stdio:
+`npm run setup`:
+
+1. installs npm dependencies,
+2. builds pi-as-mcp,
+3. installs the pinned OpenAI `tunnel-client` and verifies its published SHA-256 checksum,
+4. asks for the local development root, tunnel ID, and runtime API key,
+5. writes the private local configuration to `tunnel/.env` with mode `0600`.
+
+For a persistent coding workbench, the default development root is `$HOME/dev`. It is usually more useful to expose that broader root than one individual repository, because changing repositories then requires no MCP restart.
+
+Start the tunnel with one command:
 
 ```bash
-npm start
+npm run tunnel
 ```
 
-or:
+Startup automatically checks that the build and local configuration are usable, rebuilds stale source if necessary, runs `tunnel-client doctor --explain`, and then starts the tunnel in the foreground. Keep that process running while ChatGPT is using the MCP app; **Ctrl-C stops it**.
+
+In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and select the associated tunnel.
+
+Useful operator commands:
 
 ```bash
-node dist/index.js
+npm run tunnel:status   # probe health/readiness and require a successful control-plane poll
+npm run tunnel:ui       # open the local tunnel admin UI
+npm run tunnel:doctor   # run the full local preflight explicitly
 ```
+
+That is the normal setup and day-to-day flow.
+
+### Re-running setup
+
+`npm run setup` is idempotent: an existing `tunnel/.env` is loaded and preserved as the default configuration, and the runtime API key is never printed back to the terminal. To force a fresh tunnel-client download:
+
+```bash
+npm run setup -- --refresh-tunnel-client
+```
+
+For automation or CI-like environments where prompting is undesirable:
+
+```bash
+npm run setup -- --non-interactive
+```
+
+If no `tunnel/.env` exists in non-interactive mode, the template is installed and must be filled in before the tunnel can start.
 
 ## Configuration
+
+The MCP server itself can be run directly:
 
 ```text
 Usage: pi-mcp [--cwd <dir>] [--tools <list>]
@@ -81,29 +120,27 @@ Usage: pi-mcp [--cwd <dir>] [--tools <list>]
 -h, --help            Show help
 ```
 
-The same defaults can be provided through environment variables:
-
-```bash
-export PI_MCP_CWD="$HOME/dev"
-export PI_MCP_TOOLS="read,write,edit,bash"
-node dist/index.js
-```
-
-CLI flags override the corresponding environment defaults.
-
-`PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
-
-For a persistent coding workbench, using a broader development root is often more useful than binding the server to one repository:
+The corresponding environment variables are:
 
 ```bash
 PI_MCP_CWD="$HOME/dev"
+PI_MCP_TOOLS="read,write,edit,bash"
 ```
 
-Then the client can work across repositories without restarting the MCP server merely to change the base directory.
+CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools.
+
+`PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
+
+The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` in the gitignored `tunnel/.env`. Changing `PI_MCP_CWD` or `PI_MCP_TOOLS` requires restarting the running tunnel because the MCP subprocess receives them when it starts.
 
 ## Generic stdio MCP client
 
-Point the client at the built server and choose the process working directory or pass `--cwd` explicitly:
+If the client can spawn local stdio MCP servers directly, no OpenAI tunnel is needed. Build the project and point the client at `dist/index.js`:
+
+```bash
+npm install
+npm run build
+```
 
 ```jsonc
 {
@@ -120,84 +157,49 @@ Point the client at the built server and choose the process working directory or
 }
 ```
 
-To expose only read and shell access, for example:
+To expose only a subset, add for example:
 
 ```text
 --tools read,bash
 ```
 
-## ChatGPT via OpenAI Secure MCP Tunnel
+## Tunnel implementation details
 
-ChatGPT cannot directly spawn a stdio MCP server on your laptop. OpenAI's Secure MCP Tunnel runs locally, establishes an outbound connection to OpenAI, and forwards MCP traffic to the stdio server without requiring an inbound port or public MCP endpoint.
+The repo-local tunnel support intentionally keeps OpenAI's tunnel client separate from the MCP bridge:
 
-This repository includes a small repo-local tunnel setup.
-
-### 1. Build pi-as-mcp
-
-```bash
-npm install
-npm run build
+```text
+ChatGPT
+   │
+   │ OpenAI Secure MCP Tunnel
+   ▼
+tunnel-client
+   │ stdio
+   ▼
+pi-as-mcp
+   │
+   └── read / write / edit / bash
 ```
 
-### 2. Create the OpenAI tunnel and runtime key
+Relevant files:
 
-Create a tunnel in the OpenAI Platform, associate it with the ChatGPT workspace you intend to use, and create a **runtime** API key for the tunnel client.
-
-### 3. Install `tunnel-client`
-
-```bash
-./scripts/tunnel-install.sh
+```text
+scripts/setup.sh             one-command bootstrap/configuration wizard
+scripts/tunnel.sh            run/doctor/status/UI operator wrapper
+scripts/tunnel-install.sh    checksum-verified tunnel-client installer
+tunnel/.env                  private local settings and runtime key (gitignored)
+tunnel/profile.yaml          committed tunnel-client profile
+bin/tunnel-client            pinned downloaded binary (gitignored)
 ```
 
-The installer downloads the pinned OpenAI `tunnel-client` release for macOS/Linux and verifies it against that release's published SHA-256 checksum before installing it to `bin/tunnel-client`.
+The local tunnel admin UI is configured at `http://127.0.0.1:8080/ui`.
 
-To deliberately install another release:
+For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with `run`. If another tunnel-client already owns the configured health port, `doctor` reports that conflict.
+
+The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also be invoked directly with another release:
 
 ```bash
 TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
 ```
-
-### 4. Create the local tunnel environment
-
-```bash
-install -m 600 tunnel/.env.example tunnel/.env
-$EDITOR tunnel/.env
-```
-
-Set at least:
-
-```bash
-PI_MCP_CWD="$HOME/dev"
-CONTROL_PLANE_TUNNEL_ID=tunnel_...
-CONTROL_PLANE_API_KEY=sk_...
-```
-
-Optionally restrict the exposed tools:
-
-```bash
-PI_MCP_TOOLS=read,bash
-```
-
-`tunnel/.env` is gitignored. `scripts/tunnel.sh` also forces it to mode `0600` before loading credentials.
-
-### 5. Validate and run
-
-```bash
-./scripts/tunnel.sh doctor --explain
-./scripts/tunnel.sh run
-```
-
-For a stdio MCP target, `doctor` checks the local configuration, command, credentials presence, and health-listener availability, but it does **not** probe the stdio MCP process or establish the real tunnel session. Those happen when `run` starts the daemon. If another tunnel-client is already running on the configured health port, `doctor` will report that port as busy.
-
-The local tunnel admin UI is configured at:
-
-```text
-http://127.0.0.1:8080/ui
-```
-
-Leave the daemon running while ChatGPT is using the MCP app. In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and select the associated tunnel.
-
-Changing `PI_MCP_CWD` or `PI_MCP_TOOLS` requires restarting `tunnel-client` because the MCP subprocess receives those variables when it starts.
 
 ## Security
 
@@ -248,10 +250,11 @@ src/
   index.ts             MCP stdio server, CLI/config, validation, dispatch
   tools.ts             pi tool factories and MCP annotations
 scripts/
+  setup.sh             interactive local bootstrap/configuration wizard
   smoke.mjs            protocol-level smoke tests
   cancel.mjs           cancellation/process-tree test
   tunnel-install.sh    checksum-verified tunnel-client installer
-  tunnel.sh            repo-local tunnel-client wrapper
+  tunnel.sh            tunnel run/doctor/status/UI operator wrapper
 tunnel/
   .env.example         local configuration template
   profile.yaml         OpenAI Secure MCP Tunnel profile

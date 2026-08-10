@@ -9,6 +9,7 @@
   "files": [
     "dist/",
     "LICENSE",
+    "scripts/setup.sh",
     "scripts/tunnel-install.sh",
     "scripts/tunnel.sh",
     "tunnel/.env.example",
@@ -17,12 +18,18 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "setup": "./scripts/setup.sh",
+    "tunnel": "./scripts/tunnel.sh run",
+    "tunnel:doctor": "./scripts/tunnel.sh doctor",
+    "tunnel:status": "./scripts/tunnel.sh status",
+    "tunnel:ui": "./scripts/tunnel.sh ui",
     "build": "npm run clean && tsc -p tsconfig.json && chmod +x dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist",
     "smoke": "node scripts/smoke.mjs",
     "smoke:cancel": "node scripts/cancel.mjs",
-    "test": "npm run typecheck && npm run build && npm run smoke && npm run smoke:cancel",
+    "test:shell": "bash -n scripts/*.sh",
+    "test": "npm run typecheck && npm run test:shell && npm run build && npm run smoke && npm run smoke:cancel",
     "prepack": "npm run build"
   },
   "dependencies": {
