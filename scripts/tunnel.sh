@@ -41,6 +41,17 @@ ensure_client() {
 	[ -x "$CLIENT" ] || fail_setup "OpenAI tunnel-client is not installed."
 }
 
+warn_known_bad_client() {
+	local version
+	version="$($CLIENT --version 2>/dev/null || true)"
+	case "$version" in
+		0.0.11*)
+			echo "WARNING: tunnel-client v0.0.11 has an upstream shared-stdio response-deadline shutdown bug (openai/tunnel-client#34)." >&2
+			echo "Install the fixed upstream commit or a later stable release before relying on long-running tool calls." >&2
+			;;
+	esac
+}
+
 load_env() {
 	[ -f "$ENV_FILE" ] || fail_setup "tunnel/.env is missing."
 	chmod 600 "$ENV_FILE"
@@ -89,6 +100,7 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
 	run|start)
 		ensure_client
+		warn_known_bad_client
 		load_env
 		ensure_build
 		echo "Running tunnel preflight..." >&2
@@ -97,6 +109,8 @@ case "$command" in
 		exec "$CLIENT" run --profile-file "$PROFILE" "$@"
 		;;
 	doctor)
+		ensure_client
+		warn_known_bad_client
 		if [ "$#" -eq 0 ]; then
 			set -- --explain
 		fi

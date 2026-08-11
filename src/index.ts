@@ -26,6 +26,36 @@ interface PackageMetadata {
 	version: string;
 }
 
+type LifecycleFields = Record<string, string | number | boolean | undefined>;
+
+function logLifecycle(event: string, fields: LifecycleFields = {}): void {
+	process.stderr.write(`${JSON.stringify({
+		time: new Date().toISOString(),
+		component: "pi-as-mcp",
+		event,
+		pid: process.pid,
+		...fields,
+	})}\n`);
+}
+
+function installLifecycleDiagnostics(): void {
+	for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"] as const) {
+		const handler = (): void => {
+			logLifecycle("signal", { signal });
+			process.removeListener(signal, handler);
+			process.kill(process.pid, signal);
+		};
+		process.on(signal, handler);
+	}
+	process.stdin.on("end", () => logLifecycle("stdin_end"));
+	process.stdin.on("close", () => logLifecycle("stdin_close"));
+	process.on("uncaughtExceptionMonitor", (error) => {
+		// Keep lifecycle logs diagnostic without echoing exception text that may
+		// contain paths, command output, or other user-controlled content.
+		logLifecycle("uncaught_exception", { name: error.name });
+	});
+}
+
 const PACKAGE = JSON.parse(
 	readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as PackageMetadata;
@@ -162,7 +192,9 @@ function cleanSchema(tool: PiTool): Record<string, unknown> {
 }
 
 async function main(): Promise<void> {
+	installLifecycleDiagnostics();
 	const opts = parseArgs(process.argv);
+	logLifecycle("starting", { cwd: opts.cwd, tools: opts.tools.join(",") });
 	const tools = createPiTools(opts.cwd, opts.tools);
 	const byName = new Map<string, PiTool>(tools.map((tool) => [tool.name, tool]));
 	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
@@ -193,8 +225,17 @@ async function main(): Promise<void> {
 
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params;
+		const requestId = String(extra.requestId ?? globalThis.crypto.randomUUID());
+		const startedAt = Date.now();
+		logLifecycle("tool_call_start", { tool: name, request_id: requestId });
 		const tool = byName.get(name);
 		if (!tool) {
+			logLifecycle("tool_call_end", {
+				tool: name,
+				request_id: requestId,
+				duration_ms: Date.now() - startedAt,
+				unknown_tool: true,
+			});
 			return {
 				content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
 				isError: true,
@@ -215,9 +256,8 @@ async function main(): Promise<void> {
 				};
 			}
 
-			const toolCallId = String(extra.requestId ?? globalThis.crypto.randomUUID());
 			const result = await (tool.definition.execute as unknown as PiExecute)(
-				toolCallId,
+				requestId,
 				validation.data,
 				extra.signal,
 				undefined,
@@ -227,10 +267,18 @@ async function main(): Promise<void> {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return { content: [{ type: "text" as const, text: message }], isError: true };
+		} finally {
+			logLifecycle("tool_call_end", {
+				tool: name,
+				request_id: requestId,
+				duration_ms: Date.now() - startedAt,
+				aborted: extra.signal?.aborted ?? false,
+			});
 		}
 	});
 
 	await server.connect(new StdioServerTransport());
+	logLifecycle("connected");
 }
 
 main().catch((error) => {

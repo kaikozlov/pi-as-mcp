@@ -42,6 +42,20 @@ async function main() {
 		}
 		console.log(`callTool ${outcome} after ${Date.now() - start}ms`);
 
+		// Cancellation must retire only this request. The shared MCP stdio server
+		// must remain usable immediately afterward.
+		const followup = await client.callTool({
+			name: "bash",
+			arguments: { command: "printf 'survived-cancel'" },
+		});
+		const followupText = (followup.content ?? [])
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("\n");
+		assert(!followup.isError, `follow-up bash failed after cancellation: ${followupText}`);
+		assert(followupText.includes("survived-cancel"), `unexpected follow-up output: ${followupText}`);
+		console.log("follow-up MCP bash succeeded after cancellation");
+
 		// Wait beyond the command's uncancelled lifetime. A runaway detached process
 		// would have written all five ticks by this point.
 		await new Promise((resolve) => setTimeout(resolve, 7000));
@@ -49,7 +63,7 @@ async function main() {
 		const ticks = contents.split("\n").filter((line) => line.startsWith("tick"));
 		console.log(`ticks written: ${ticks.length} -> ${JSON.stringify(ticks)}`);
 		assert(ticks.length < 5, `expected cancellation, but process ran to completion (${ticks.length} ticks)`);
-		console.log("PASS: cancellation propagated to pi's bash (process tree killed)");
+		console.log("PASS: cancellation killed only the bash process tree and the MCP server stayed usable");
 	} finally {
 		await client.close().catch(() => undefined);
 		await rm(cwd, { recursive: true, force: true });

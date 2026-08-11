@@ -196,11 +196,29 @@ The local tunnel admin UI is configured at `http://127.0.0.1:8080/ui`.
 
 For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with `run`. If another tunnel-client already owns the configured health port, `doctor` reports that conflict.
 
-The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also be invoked directly with another release:
+The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also install another release:
 
 ```bash
 TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
 ```
+
+For an upstream fix that has landed on `openai/tunnel-client` but has not reached a release yet, the installer can build an exact official commit locally with Go:
+
+```bash
+TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
+```
+
+### tunnel-client v0.0.11 response-deadline bug
+
+OpenAI tunnel-client `v0.0.11` has a known shared-stdio lifecycle bug ([openai/tunnel-client#34](https://github.com/openai/tunnel-client/issues/34)): when a tunneled request reaches its control-plane response deadline, the logical request can close the shared stdio connection. A later write then fails and `tunnel-client` shuts down the whole daemon. Long-running `bash` calls are a practical trigger.
+
+OpenAI fixed the bug on upstream master in commit `c537a6febe25eac696cc25bbe8741ad64727368f`; the issue notes that `v0.0.11` remains affected and the fix will ship in the next release. Until then, install that exact commit with:
+
+```bash
+TUNNEL_CLIENT_COMMIT=c537a6febe25eac696cc25bbe8741ad64727368f ./scripts/tunnel-install.sh
+```
+
+`scripts/tunnel.sh run` and `doctor` warn when the installed client still reports `v0.0.11`.
 
 ## Security
 
@@ -240,7 +258,7 @@ The smoke suite exercises:
 - CLI and environment configuration
 - tool subsets
 
-The cancellation test starts a long-lived bash command, aborts the MCP request, and verifies that pi kills the process tree rather than leaving it running in the background.
+The cancellation test starts a long-lived bash command, aborts the MCP request, verifies that pi kills the process tree rather than leaving it running in the background, and then immediately performs another MCP `bash` call to prove the stdio server itself remains usable after cancellation.
 
 CI runs the suite at the minimum supported Node version and on current Node.
 
