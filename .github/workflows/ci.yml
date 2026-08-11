@@ -11,14 +11,18 @@ jobs:
   test:
     strategy:
       matrix:
-        node: ["22.19.0", "26.x"]
+        node: ["26.x"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      # Bun is the package manager and task runner.
+      - uses: oven-sh/setup-bun@v2
+      # Node is the deployed runtime: profile.yaml runs `node ./dist/index.js`,
+      # and the smoke suite spawns the server via process.execPath (node).
+      # The matrix validates the supported Node range.
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm pack --dry-run
+      - run: bun install --frozen-lockfile
+      - run: bun run test
+      - run: bun pm pack --dry-run

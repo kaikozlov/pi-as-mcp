@@ -47,7 +47,8 @@ There is no tool reimplementation.
 
 ## Requirements
 
-- Node.js **22.19.0 or newer**
+- [Bun](https://bun.com) — installs dependencies and runs scripts
+- Node.js **22.19.0 or newer** — runs the server (it is the deployed runtime)
 
 ## ChatGPT quick start
 
@@ -58,12 +59,12 @@ Then clone the repo and run the setup wizard:
 ```bash
 git clone https://github.com/kaikozlov/pi-as-mcp.git
 cd pi-as-mcp
-npm run setup
+bun run setup
 ```
 
-`npm run setup`:
+`bun run setup`:
 
-1. installs npm dependencies,
+1. installs dependencies with bun,
 2. builds pi-as-mcp,
 3. installs the pinned OpenAI `tunnel-client` and verifies its published SHA-256 checksum,
 4. asks for the local development root, tunnel ID, and runtime API key,
@@ -74,7 +75,7 @@ For a persistent coding workbench, the default development root is `$HOME/dev`. 
 Start the tunnel with one command:
 
 ```bash
-npm run tunnel
+bun run tunnel
 ```
 
 Startup automatically checks that the build and local configuration are usable, rebuilds stale source if necessary, runs `tunnel-client doctor --explain`, and then starts the tunnel in the foreground. Keep that process running while ChatGPT is using the MCP app; **Ctrl-C stops it**.
@@ -84,25 +85,25 @@ In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and
 Useful operator commands:
 
 ```bash
-npm run tunnel:status   # probe health/readiness and require a successful control-plane poll
-npm run tunnel:ui       # open the local tunnel admin UI
-npm run tunnel:doctor   # run the full local preflight explicitly
+bun run tunnel:status   # probe health/readiness and require a successful control-plane poll
+bun run tunnel:ui       # open the local tunnel admin UI
+bun run tunnel:doctor   # run the full local preflight explicitly
 ```
 
 That is the normal setup and day-to-day flow.
 
 ### Re-running setup
 
-`npm run setup` is idempotent: an existing `tunnel/.env` is loaded and preserved as the default configuration, and the runtime API key is never printed back to the terminal. To force a fresh tunnel-client download:
+`bun run setup` is idempotent: an existing `tunnel/.env` is loaded and preserved as the default configuration, and the runtime API key is never printed back to the terminal. To force a fresh tunnel-client download:
 
 ```bash
-npm run setup -- --refresh-tunnel-client
+bun run setup -- --refresh-tunnel-client
 ```
 
 For automation or CI-like environments where prompting is undesirable:
 
 ```bash
-npm run setup -- --non-interactive
+bun run setup -- --non-interactive
 ```
 
 If no `tunnel/.env` exists in non-interactive mode, the template is installed and must be filled in before the tunnel can start.
@@ -138,8 +139,8 @@ The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and 
 If the client can spawn local stdio MCP servers directly, no OpenAI tunnel is needed. Build the project and point the client at `dist/index.js`:
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ```jsonc
@@ -221,14 +222,14 @@ MCP tool annotations are advisory metadata for clients, not an authorization bou
 ## Development
 
 ```bash
-npm run typecheck
-npm run build
-npm run smoke
-npm run smoke:cancel
-npm test
+bun run typecheck
+bun run build
+bun run smoke
+bun run smoke:cancel
+bun run test
 ```
 
-`npm test` runs typechecking, a clean build, the protocol smoke suite, and the cancellation test.
+`bun run test` runs typechecking, a clean build, the protocol smoke suite, and the cancellation test.
 
 The smoke suite exercises:
 

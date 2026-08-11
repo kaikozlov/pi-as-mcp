@@ -20,20 +20,20 @@ Commands:
   client    Pass remaining arguments directly to tunnel-client
   help      Show this help
 
-Common npm aliases:
-  npm run tunnel
-  npm run tunnel:doctor
-  npm run tunnel:status
-  npm run tunnel:ui
+Common bun aliases:
+  bun run tunnel
+  bun run tunnel:doctor
+  bun run tunnel:status
+  bun run tunnel:ui
 
 First-time setup:
-  npm run setup
+  bun run setup
 EOF
 }
 
 fail_setup() {
 	echo "$1" >&2
-	echo "Run: npm run setup" >&2
+	echo "Run: bun run setup" >&2
 	exit 1
 }
 
@@ -72,7 +72,7 @@ needs_build() {
 ensure_build() {
 	if needs_build; then
 		echo "pi-as-mcp build is missing or stale; rebuilding..." >&2
-		npm run build >&2
+		bun run build >&2
 	fi
 }
 
