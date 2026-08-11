@@ -42,7 +42,7 @@ ChatGPT / remote MCP client
           └── bash
 ```
 
-For the Cloudflare deployment described below, `cloudflared` is deliberately only network ingress. It does not understand MCP requests and does not supervise the MCP process.
+The canonical remote deployment uses Cloudflare Tunnel for network ingress and Cloudflare Access Managed OAuth for authentication. `cloudflared` remains deliberately MCP-unaware: it forwards HTTP and does not supervise the MCP process.
 
 ## Requirements
 
@@ -211,25 +211,6 @@ Treat a write-capable deployment as remote shell access to the account running i
 
 For remote HTTP deployment, bind pi-as-mcp to loopback and put authenticated ingress in front of it. Cloudflare Access mode additionally validates the signed Access assertion at the origin.
 
-## Legacy OpenAI Secure MCP Tunnel
-
-The previous OpenAI Secure MCP Tunnel integration remains in the repository as a migration/fallback path:
-
-```bash
-bun run setup:tunnel
-bun run tunnel:doctor
-bun run tunnel
-bun run tunnel:status
-```
-
-The legacy tunnel wrapper and installer are under `scripts/tunnel*.sh` and `tunnel/`. They are no longer the primary setup path.
-
-OpenAI tunnel-client `v0.0.11` had a shared-stdio response-deadline bug that could turn a single expired request into a daemon shutdown. `scripts/tunnel-install.sh` supports building an exact upstream commit when a fix has landed before a stable release:
-
-```bash
-TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
-```
-
 ## Development
 
 ```bash
@@ -256,9 +237,6 @@ scripts/
   http-auth-smoke.mjs   Cloudflare Access JWT regression
   smoke.mjs             stdio protocol smoke tests
   cancel.mjs            stdio cancellation/process-tree regression
-  setup-openai-tunnel.sh
-  tunnel.sh             legacy OpenAI tunnel wrapper
-  tunnel-install.sh     legacy tunnel-client installer
 server/
   .env.example          HTTP/Cloudflare configuration template
 ```

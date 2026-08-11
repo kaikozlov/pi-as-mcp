@@ -18,8 +18,6 @@ Options:
   --non-interactive  Never prompt; use defaults in a newly created server/.env.
   -h, --help         Show this help.
 
-Legacy OpenAI Secure MCP Tunnel setup remains available as:
-  bun run setup:tunnel
 EOF
 }
 

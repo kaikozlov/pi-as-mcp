@@ -4,9 +4,5 @@ dist/
 .DS_Store
 # Local reference checkout of pi source (not part of this project).
 REFERENCE/
-# Self-contained tunnel-client binary (downloaded by scripts/tunnel-install.sh).
-/bin/
-# Local tunnel secrets.
-/tunnel/.env
 # Local Streamable HTTP server configuration / Cloudflare Access metadata.
 /server/.env

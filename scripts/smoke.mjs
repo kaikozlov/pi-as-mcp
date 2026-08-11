@@ -139,6 +139,9 @@ async function main() {
 				...cleanEnv(),
 				PI_MCP_CWD: cwd,
 				PI_MCP_TOOLS: "read",
+				// This is a stdio transport test even when the parent test process
+				// itself was launched through an HTTP-configured pi-as-mcp server.
+				PI_MCP_TRANSPORT: "stdio",
 			});
 			clients.push(envClient);
 			const { tools } = await envClient.listTools();
