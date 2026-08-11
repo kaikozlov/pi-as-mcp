@@ -43,7 +43,9 @@ export function createCloudflareAccessMiddleware(config: CloudflareAccessConfig)
 			});
 			res.locals.cloudflareAccess = payload;
 			next();
-		} catch {
+		} catch (error) {
+			const detail = error as { name?: string; code?: string; claim?: string; reason?: string; message?: string };
+			process.stderr.write(`${JSON.stringify({ event: "cloudflare_access_verify_failed", name: detail.name, code: detail.code, claim: detail.claim, reason: detail.reason, message: detail.message })}\n`);
 			res.status(403).json({ error: "invalid Cloudflare Access JWT" });
 		}
 	};
