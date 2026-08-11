@@ -1,7 +1,7 @@
 {
   "name": "pi-as-mcp",
   "version": "0.1.0",
-  "description": "Expose pi's core coding tools (read, write, edit, bash) as an MCP server over stdio.",
+  "description": "Expose pi's core coding tools (read, write, edit, bash) as an MCP server over stdio or Streamable HTTP.",
   "type": "module",
   "bin": {
     "pi-mcp": "./dist/index.js"
@@ -10,8 +10,11 @@
     "dist/",
     "LICENSE",
     "scripts/setup.sh",
+    "scripts/setup-openai-tunnel.sh",
+    "scripts/http.sh",
     "scripts/tunnel-install.sh",
     "scripts/tunnel.sh",
+    "server/.env.example",
     "tunnel/.env.example",
     "tunnel/profile.yaml"
   ],
@@ -19,6 +22,9 @@
     "dev": "bun src/index.ts",
     "start": "node dist/index.js",
     "setup": "./scripts/setup.sh",
+    "setup:tunnel": "./scripts/setup-openai-tunnel.sh",
+    "http": "./scripts/http.sh run",
+    "http:status": "./scripts/http.sh status",
     "tunnel": "./scripts/tunnel.sh run",
     "tunnel:doctor": "./scripts/tunnel.sh doctor",
     "tunnel:status": "./scripts/tunnel.sh status",
@@ -28,15 +34,20 @@
     "clean": "rm -rf dist",
     "smoke": "node scripts/smoke.mjs",
     "smoke:cancel": "node scripts/cancel.mjs",
+    "smoke:http": "node scripts/http-smoke.mjs",
+    "smoke:http-auth": "node scripts/http-auth-smoke.mjs",
     "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel",
+    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:http && bun run smoke:http-auth",
     "prepack": "bun run build"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.1",
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "express": "^5.2.1",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
+    "@types/express": "^5.0.3",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   },

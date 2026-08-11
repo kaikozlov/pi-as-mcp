@@ -8,3 +8,5 @@ REFERENCE/
 /bin/
 # Local tunnel secrets.
 /tunnel/.env
+# Local Streamable HTTP server configuration / Cloudflare Access metadata.
+/server/.env

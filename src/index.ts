@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 /**
  * pi-as-mcp: expose pi's four default coding tools (read, write, edit, bash)
- * as an MCP server over stdio. The agent loop is intentionally out of scope.
+ * as an MCP server over stdio or Streamable HTTP. The agent loop is
+ * intentionally out of scope.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import {
+	createCloudflareAccessMiddleware,
+	parseCloudflareAccessConfig,
+} from "./cloudflare-auth.js";
 import {
 	ALL_TOOL_NAMES,
 	createPiTools,
@@ -17,9 +25,18 @@ import {
 	type PiToolName,
 } from "./tools.js";
 
+type TransportKind = "stdio" | "http";
+type AuthKind = "none" | "cloudflare-access";
+
 interface Options {
 	cwd: string;
 	tools: PiToolName[];
+	transport: TransportKind;
+	host: string;
+	port: number;
+	path: string;
+	auth: AuthKind;
+	allowedHosts: string[];
 }
 
 interface PackageMetadata {
@@ -60,18 +77,30 @@ const PACKAGE = JSON.parse(
 	readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as PackageMetadata;
 const VERSION = PACKAGE.version;
+const DEFAULT_HTTP_HOST = "127.0.0.1";
+const DEFAULT_HTTP_PORT = 3333;
+const DEFAULT_HTTP_PATH = "/mcp";
 
 function printHelp(): void {
 	const out = process.stdout;
-	out.write("pi-as-mcp — pi's four default coding tools as an MCP server (stdio)\n\n");
-	out.write("Usage: pi-mcp [--cwd <dir>] [--tools <list>]\n\n");
+	out.write("pi-as-mcp — pi's four default coding tools as an MCP server\n\n");
+	out.write("Usage: pi-mcp [options]\n\n");
 	out.write("Options:\n");
-	out.write("  -C, --cwd <dir>      Base directory for relative paths.\n");
-	out.write("                       Default: $PI_MCP_CWD, or the process working directory.\n");
-	out.write("  -T, --tools <list>   Comma-separated subset of: " + ALL_TOOL_NAMES.join(", ") + "\n");
-	out.write("                       Default: $PI_MCP_TOOLS, or all four.\n");
-	out.write("  -V, --version        Show the package version.\n");
-	out.write("  -h, --help           Show this help.\n\n");
+	out.write("  -C, --cwd <dir>          Base directory for relative paths.\n");
+	out.write("                           Default: $PI_MCP_CWD, or process cwd.\n");
+	out.write("  -T, --tools <list>       Comma-separated subset of: " + ALL_TOOL_NAMES.join(", ") + "\n");
+	out.write("                           Default: $PI_MCP_TOOLS, or all four.\n");
+	out.write("      --transport <kind>   stdio or http. Default: $PI_MCP_TRANSPORT or stdio.\n");
+	out.write("      --host <host>        HTTP bind host. Default: $PI_MCP_HTTP_HOST or 127.0.0.1.\n");
+	out.write("      --port <port>        HTTP port. Default: $PI_MCP_HTTP_PORT or 3333.\n");
+	out.write("      --path <path>        MCP HTTP path. Default: $PI_MCP_HTTP_PATH or /mcp.\n");
+	out.write("      --auth <kind>        HTTP auth: cloudflare-access or none.\n");
+	out.write("                           Default: $PI_MCP_AUTH or cloudflare-access.\n");
+	out.write("      --allowed-hosts <l>  Extra comma-separated HTTP Host allowlist.\n");
+	out.write("                           Default: $PI_MCP_HTTP_ALLOWED_HOSTS.\n");
+	out.write("  -V, --version            Show the package version.\n");
+	out.write("  -h, --help               Show this help.\n\n");
+	out.write("Cloudflare Access auth requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD.\n");
 	out.write("These are pi's unsandboxed tools. --cwd only controls relative-path resolution;\n");
 	out.write("absolute paths remain accessible, exactly as in pi itself.\n");
 }
@@ -94,12 +123,51 @@ function parseToolList(value: string, source: string): PiToolName[] {
 	return [...new Set(parsed)] as PiToolName[];
 }
 
+function parseStringList(value: string | undefined): string[] {
+	if (!value) return [];
+	return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
+function parseTransport(value: string | undefined, source: string): TransportKind {
+	const normalized = (value ?? "stdio").trim();
+	if (normalized === "stdio" || normalized === "http") return normalized;
+	throw new Error(`${source} must be one of: stdio, http`);
+}
+
+function parseAuth(value: string | undefined, source: string): AuthKind {
+	const normalized = (value ?? "cloudflare-access").trim();
+	if (normalized === "none" || normalized === "cloudflare-access") return normalized;
+	throw new Error(`${source} must be one of: none, cloudflare-access`);
+}
+
+function parsePort(value: string | undefined, source: string): number {
+	const port = Number(value ?? DEFAULT_HTTP_PORT);
+	if (!Number.isInteger(port) || port < 1 || port > 65535) {
+		throw new Error(`${source} must be an integer from 1 to 65535`);
+	}
+	return port;
+}
+
+function normalizeHttpPath(value: string | undefined): string {
+	const path = (value ?? DEFAULT_HTTP_PATH).trim();
+	if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+		throw new Error("HTTP MCP path must start with / and must not contain a query or fragment");
+	}
+	return path;
+}
+
 function parseArgs(argv: readonly string[]): Options {
 	const envCwd = process.env.PI_MCP_CWD?.trim();
 	const envTools = process.env.PI_MCP_TOOLS?.trim();
 	const opts: Options = {
 		cwd: envCwd || process.cwd(),
 		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : [...ALL_TOOL_NAMES],
+		transport: parseTransport(process.env.PI_MCP_TRANSPORT, "$PI_MCP_TRANSPORT"),
+		host: process.env.PI_MCP_HTTP_HOST?.trim() || DEFAULT_HTTP_HOST,
+		port: parsePort(process.env.PI_MCP_HTTP_PORT, "$PI_MCP_HTTP_PORT"),
+		path: normalizeHttpPath(process.env.PI_MCP_HTTP_PATH),
+		auth: parseAuth(process.env.PI_MCP_AUTH, "$PI_MCP_AUTH"),
+		allowedHosts: parseStringList(process.env.PI_MCP_HTTP_ALLOWED_HOSTS),
 	};
 
 	for (let i = 2; i < argv.length; i++) {
@@ -130,6 +198,42 @@ function parseArgs(argv: readonly string[]): Options {
 				const value = next();
 				if (!value) throw new Error(`${arg} requires a comma-separated tool list`);
 				opts.tools = parseToolList(value, arg);
+				break;
+			}
+			case "--transport": {
+				const value = next();
+				if (!value) throw new Error("--transport requires stdio or http");
+				opts.transport = parseTransport(value, "--transport");
+				break;
+			}
+			case "--host": {
+				const value = next();
+				if (!value) throw new Error("--host requires a hostname or address");
+				opts.host = value;
+				break;
+			}
+			case "--port": {
+				const value = next();
+				if (!value) throw new Error("--port requires a port number");
+				opts.port = parsePort(value, "--port");
+				break;
+			}
+			case "--path": {
+				const value = next();
+				if (!value) throw new Error("--path requires an HTTP path");
+				opts.path = normalizeHttpPath(value);
+				break;
+			}
+			case "--auth": {
+				const value = next();
+				if (!value) throw new Error("--auth requires none or cloudflare-access");
+				opts.auth = parseAuth(value, "--auth");
+				break;
+			}
+			case "--allowed-hosts": {
+				const value = next();
+				if (!value) throw new Error("--allowed-hosts requires a comma-separated list");
+				opts.allowedHosts = parseStringList(value);
 				break;
 			}
 			default:
@@ -191,10 +295,7 @@ function cleanSchema(tool: PiTool): Record<string, unknown> {
 	return JSON.parse(JSON.stringify(tool.definition.parameters)) as Record<string, unknown>;
 }
 
-async function main(): Promise<void> {
-	installLifecycleDiagnostics();
-	const opts = parseArgs(process.argv);
-	logLifecycle("starting", { cwd: opts.cwd, tools: opts.tools.join(",") });
+function createPiMcpServer(opts: Options): Server {
 	const tools = createPiTools(opts.cwd, opts.tools);
 	const byName = new Map<string, PiTool>(tools.map((tool) => [tool.name, tool]));
 	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
@@ -277,8 +378,135 @@ async function main(): Promise<void> {
 		}
 	});
 
+	return server;
+}
+
+async function runStdio(opts: Options): Promise<void> {
+	const server = createPiMcpServer(opts);
 	await server.connect(new StdioServerTransport());
-	logLifecycle("connected");
+	logLifecycle("connected", { transport: "stdio" });
+}
+
+async function runHttp(opts: Options): Promise<void> {
+	const allowedHosts = [...new Set([opts.host, "localhost", "127.0.0.1", ...opts.allowedHosts])];
+	const app = createMcpExpressApp({ host: opts.host, allowedHosts });
+	const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: Server }>();
+
+	app.get("/healthz", (_req, res) => {
+		res.json({ status: "ok", name: "pi-as-mcp", version: VERSION, sessions: sessions.size });
+	});
+
+	if (opts.auth === "cloudflare-access") {
+		app.use(opts.path, createCloudflareAccessMiddleware(parseCloudflareAccessConfig(process.env)));
+	} else if (opts.host !== "127.0.0.1" && opts.host !== "localhost" && opts.host !== "::1") {
+		throw new Error("Refusing unauthenticated HTTP mode on a non-loopback bind address");
+	}
+
+	app.post(opts.path, async (req, res) => {
+		const sessionId = req.header("mcp-session-id");
+		try {
+			if (sessionId) {
+				const session = sessions.get(sessionId);
+				if (!session) {
+					res.status(404).json({
+						jsonrpc: "2.0",
+						error: { code: -32001, message: "Unknown MCP session" },
+						id: null,
+					});
+					return;
+				}
+				await session.transport.handleRequest(req, res, req.body);
+				return;
+			}
+
+			if (!isInitializeRequest(req.body)) {
+				res.status(400).json({
+					jsonrpc: "2.0",
+					error: { code: -32000, message: "Missing MCP session ID" },
+					id: null,
+				});
+				return;
+			}
+
+			const server = createPiMcpServer(opts);
+			let transport: StreamableHTTPServerTransport;
+			transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: () => randomUUID(),
+				onsessioninitialized: (newSessionId) => {
+					sessions.set(newSessionId, { transport, server });
+					logLifecycle("http_session_open", { session_id: newSessionId });
+				},
+				// SSE comments keep long-running calls alive through reverse proxies.
+				keepAliveMs: 15_000,
+			});
+			transport.onclose = () => {
+				const closedSessionId = transport.sessionId;
+				if (closedSessionId) {
+					sessions.delete(closedSessionId);
+					logLifecycle("http_session_close", { session_id: closedSessionId });
+				}
+				void server.close().catch(() => undefined);
+			};
+			await server.connect(transport);
+			await transport.handleRequest(req, res, req.body);
+		} catch {
+			if (!res.headersSent) {
+				res.status(500).json({
+					jsonrpc: "2.0",
+					error: { code: -32603, message: "Internal server error" },
+					id: null,
+				});
+			}
+		}
+	});
+
+	const getSession = (sessionId: string | undefined) => sessionId ? sessions.get(sessionId) : undefined;
+	app.get(opts.path, async (req, res) => {
+		const session = getSession(req.header("mcp-session-id"));
+		if (!session) {
+			res.status(400).send("Invalid or missing MCP session ID");
+			return;
+		}
+		await session.transport.handleRequest(req, res);
+	});
+	app.delete(opts.path, async (req, res) => {
+		const session = getSession(req.header("mcp-session-id"));
+		if (!session) {
+			res.status(400).send("Invalid or missing MCP session ID");
+			return;
+		}
+		await session.transport.handleRequest(req, res);
+	});
+
+	await new Promise<void>((resolveListen, rejectListen) => {
+		const httpServer = app.listen(opts.port, opts.host, () => {
+			logLifecycle("connected", {
+				transport: "http",
+				host: opts.host,
+				port: opts.port,
+				path: opts.path,
+				auth: opts.auth,
+			});
+			resolveListen();
+		});
+		httpServer.once("error", rejectListen);
+	});
+}
+
+async function main(): Promise<void> {
+	installLifecycleDiagnostics();
+	const opts = parseArgs(process.argv);
+	logLifecycle("starting", {
+		cwd: opts.cwd,
+		tools: opts.tools.join(","),
+		transport: opts.transport,
+	});
+
+	if (opts.transport === "stdio") {
+		await runStdio(opts);
+		return;
+	}
+	await runHttp(opts);
 }
 
 main().catch((error) => {

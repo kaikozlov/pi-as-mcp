@@ -1,60 +1,55 @@
 # pi-as-mcp
 
-Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio.
+Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over either **stdio** or **Streamable HTTP**.
 
 The bridge deliberately does not include pi's agent loop. Your MCP client remains the agent; pi-as-mcp supplies pi's actual tool implementations.
 
 ## Why
 
-A capable MCP client does not need a large bespoke coding API. Pi's four-tool interface already provides the useful primitives:
+Pi's four-tool interface is enough for most coding workflows:
 
 - `read` — read text files and images
 - `write` — create or replace files
 - `edit` — exact-text edits
 - `bash` — run shell commands
 
-That is enough for repository inspection, search, git, builds, tests, formatters, compilers, and essentially any other local development workflow available from the shell.
+The adapter is intentionally thin. Pi's real tool implementations execute the work; pi-as-mcp only handles MCP schemas, dispatch, cancellation, transport, and authentication.
 
-## How it works
+## Architecture
 
-pi-as-mcp depends on the published `@earendil-works/pi-coding-agent` package and creates pi's built-in tool definitions directly:
+Local MCP clients can use stdio directly:
 
 ```text
-MCP client
-   │
-   │ tools/list + tools/call
-   ▼
-pi-as-mcp
-   │
-   ├── createReadToolDefinition(cwd)
-   ├── createWriteToolDefinition(cwd)
-   ├── createEditToolDefinition(cwd)
-   └── createBashToolDefinition(cwd)
-            │
-            ▼
-       local machine
+MCP client ── stdio ── pi-as-mcp ── pi tools ── local machine
 ```
 
-The adapter is intentionally thin:
+Remote clients such as ChatGPT can use standard Streamable HTTP:
 
-- Pi's TypeBox parameter schemas are advertised as MCP JSON Schema and validated before execution.
-- Pi's text/image results are normalized into MCP content blocks.
-- MCP cancellation is passed into pi's tool execution; for `bash`, pi terminates the spawned process tree.
-- Tool errors are returned as MCP tool errors rather than crashing the server.
-- MCP annotations describe read-only, destructive, idempotent, and open-world behavior to clients.
+```text
+ChatGPT / remote MCP client
+          │
+          │ HTTPS + MCP
+          ▼
+    reverse proxy / ingress
+          │
+          │ HTTP to loopback
+          ▼
+      pi-as-mcp
+          │
+          ├── read
+          ├── write
+          ├── edit
+          └── bash
+```
 
-There is no tool reimplementation.
+For the Cloudflare deployment described below, `cloudflared` is deliberately only network ingress. It does not understand MCP requests and does not supervise the MCP process.
 
 ## Requirements
 
-- [Bun](https://bun.com) — installs dependencies and runs scripts
-- Node.js **22.19.0 or newer** — runs the server (it is the deployed runtime)
+- [Bun](https://bun.com)
+- Node.js **22.19.0 or newer**
 
-## ChatGPT quick start
-
-The only OpenAI-side prerequisites are a Secure MCP Tunnel and a runtime API key. Create those in the OpenAI Platform, and associate the tunnel with the ChatGPT workspace you intend to use.
-
-Then clone the repo and run the setup wizard:
+## Setup
 
 ```bash
 git clone https://github.com/kaikozlov/pi-as-mcp.git
@@ -62,81 +57,124 @@ cd pi-as-mcp
 bun run setup
 ```
 
-`bun run setup`:
+`bun run setup` installs dependencies, builds the server, and creates `server/.env` from `server/.env.example` if needed.
 
-1. installs dependencies with bun,
-2. builds pi-as-mcp,
-3. installs the pinned OpenAI `tunnel-client` and verifies its published SHA-256 checksum,
-4. asks for the local development root, tunnel ID, and runtime API key,
-5. writes the private local configuration to `tunnel/.env` with mode `0600`.
+The normal development root is `$HOME/dev`. This is a path-resolution base, **not a sandbox**: absolute paths remain accessible exactly as they are in pi itself.
 
-For a persistent coding workbench, the default development root is `$HOME/dev`. It is usually more useful to expose that broader root than one individual repository, because changing repositories then requires no MCP restart.
-
-Start the tunnel with one command:
+Run all tests:
 
 ```bash
-bun run tunnel
+bun run test
 ```
 
-Startup automatically checks that the build and local configuration are usable, rebuilds stale source if necessary, runs `tunnel-client doctor --explain`, and then starts the tunnel in the foreground. Keep that process running while ChatGPT is using the MCP app; **Ctrl-C stops it**.
+The suite covers stdio behavior, MCP cancellation/process-tree cleanup, Streamable HTTP discovery/calls, HTTP cancellation followed by a successful call on the same server session, and Cloudflare Access JWT verification (missing token, wrong audience, and valid signed assertion).
 
-In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and select the associated tunnel.
+## Streamable HTTP
 
-Useful operator commands:
+The HTTP server is stateful per MCP session so cancellation notifications reach the same tool execution that owns the in-flight command. Long-running response streams emit SSE keepalives every 15 seconds.
 
-```bash
-bun run tunnel:status   # probe health/readiness and require a successful control-plane poll
-bun run tunnel:ui       # open the local tunnel admin UI
-bun run tunnel:doctor   # run the full local preflight explicitly
-```
-
-That is the normal setup and day-to-day flow.
-
-### Re-running setup
-
-`bun run setup` is idempotent: an existing `tunnel/.env` is loaded and preserved as the default configuration, and the runtime API key is never printed back to the terminal. To force a fresh tunnel-client download:
-
-```bash
-bun run setup -- --refresh-tunnel-client
-```
-
-For automation or CI-like environments where prompting is undesirable:
-
-```bash
-bun run setup -- --non-interactive
-```
-
-If no `tunnel/.env` exists in non-interactive mode, the template is installed and must be filled in before the tunnel can start.
-
-## Configuration
-
-The MCP server itself can be run directly:
-
-```text
-Usage: pi-mcp [--cwd <dir>] [--tools <list>]
-
--C, --cwd <dir>       Base directory for relative paths
--T, --tools <list>    Comma-separated subset of read,write,edit,bash
--V, --version         Print the package version
--h, --help            Show help
-```
-
-The corresponding environment variables are:
+Configuration lives in the gitignored `server/.env`:
 
 ```bash
 PI_MCP_CWD="$HOME/dev"
-PI_MCP_TOOLS="read,write,edit,bash"
+# PI_MCP_TOOLS="read,write,edit,bash"
+PI_MCP_TRANSPORT="http"
+PI_MCP_HTTP_HOST="127.0.0.1"
+PI_MCP_HTTP_PORT="3333"
+PI_MCP_HTTP_PATH="/mcp"
+PI_MCP_HTTP_ALLOWED_HOSTS="mcp.example.com"
+
+PI_MCP_AUTH="cloudflare-access"
+CF_ACCESS_TEAM_DOMAIN="https://your-team.cloudflareaccess.com"
+CF_ACCESS_AUD="your-access-application-audience-tag"
 ```
 
-CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools.
+Start it:
 
-`PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
+```bash
+bun run http
+```
 
-The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` in the gitignored `tunnel/.env`. Changing `PI_MCP_CWD` or `PI_MCP_TOOLS` requires restarting the running tunnel because the MCP subprocess receives them when it starts.
+Check it locally:
+
+```bash
+bun run http:status
+```
+
+For local-only testing without Cloudflare Access:
+
+```bash
+bun run http -- --auth none
+```
+
+Unauthenticated HTTP mode refuses to bind to a non-loopback address.
+
+### Cloudflare Access authentication
+
+With `PI_MCP_AUTH=cloudflare-access`, every MCP request must carry Cloudflare's signed `Cf-Access-Jwt-Assertion` header. pi-as-mcp fetches the account's rotating JWKS and verifies:
+
+- JWT signature,
+- issuer (`CF_ACCESS_TEAM_DOMAIN`), and
+- application audience (`CF_ACCESS_AUD`).
+
+The `/healthz` endpoint is intentionally simple and does not itself perform Access verification; when the hostname is protected by Cloudflare Access, Access still protects it at the edge.
+
+## ChatGPT through Cloudflare
+
+A practical deployment is:
+
+```text
+https://mcp.example.com/mcp
+        │
+        ▼
+Cloudflare Access (Managed OAuth)
+        │
+        ▼
+Cloudflare Tunnel
+        │
+        ▼
+http://127.0.0.1:3333/mcp
+```
+
+Recommended steps:
+
+1. Install `cloudflared` on the machine running pi-as-mcp.
+2. Authenticate `cloudflared` to the Cloudflare account.
+3. Create a named tunnel.
+4. Route `mcp.example.com` to the tunnel.
+5. Configure its origin service as `http://127.0.0.1:3333`.
+6. Create a Cloudflare Access application covering the MCP hostname.
+7. Restrict its policy to the identity/identities that should receive shell access.
+8. Enable **Managed OAuth** and dynamic client registration.
+9. Allow the ChatGPT callback URI used by the custom MCP app (for current ChatGPT connectors, an allow-list such as `https://chatgpt.com/connector/oauth/*` is suitable when you intentionally want to permit ChatGPT connector callbacks).
+10. Put the Access application's team domain and AUD tag into `server/.env`.
+11. Start pi-as-mcp and `cloudflared` as persistent services.
+12. Configure the remote MCP endpoint as `https://mcp.example.com/mcp` in the MCP client and select OAuth authentication.
+
+Cloudflare Access performs the interactive OAuth flow. The OAuth access token presented by the client is resolved by Cloudflare at the edge; the origin receives a signed Access JWT and validates it independently.
+
+## CLI
+
+```text
+Usage: pi-mcp [options]
+
+-C, --cwd <dir>          Base directory for relative paths
+-T, --tools <list>       Comma-separated subset of read,write,edit,bash
+    --transport <kind>   stdio or http
+    --host <host>        HTTP bind host (default 127.0.0.1)
+    --port <port>        HTTP port (default 3333)
+    --path <path>        MCP path (default /mcp)
+    --auth <kind>        cloudflare-access or none
+    --allowed-hosts <l>  Extra HTTP Host allow-list
+-V, --version            Print the package version
+-h, --help               Show help
+```
+
+Environment equivalents are `PI_MCP_CWD`, `PI_MCP_TOOLS`, `PI_MCP_TRANSPORT`, `PI_MCP_HTTP_HOST`, `PI_MCP_HTTP_PORT`, `PI_MCP_HTTP_PATH`, `PI_MCP_HTTP_ALLOWED_HOSTS`, and `PI_MCP_AUTH`.
 
 ## Generic stdio MCP client
 
-If the client can spawn local stdio MCP servers directly, no OpenAI tunnel is needed. Build the project and point the client at `dist/index.js`:
+Build the project and point a local MCP client at `dist/index.js`:
 
 ```bash
 bun install
@@ -158,68 +196,6 @@ bun run build
 }
 ```
 
-To expose only a subset, add for example:
-
-```text
---tools read,bash
-```
-
-## Tunnel implementation details
-
-The repo-local tunnel support intentionally keeps OpenAI's tunnel client separate from the MCP bridge:
-
-```text
-ChatGPT
-   │
-   │ OpenAI Secure MCP Tunnel
-   ▼
-tunnel-client
-   │ stdio
-   ▼
-pi-as-mcp
-   │
-   └── read / write / edit / bash
-```
-
-Relevant files:
-
-```text
-scripts/setup.sh             one-command bootstrap/configuration wizard
-scripts/tunnel.sh            run/doctor/status/UI operator wrapper
-scripts/tunnel-install.sh    checksum-verified tunnel-client installer
-tunnel/.env                  private local settings and runtime key (gitignored)
-tunnel/profile.yaml          committed tunnel-client profile
-bin/tunnel-client            pinned downloaded binary (gitignored)
-```
-
-The local tunnel admin UI is configured at `http://127.0.0.1:8080/ui`.
-
-For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with `run`. If another tunnel-client already owns the configured health port, `doctor` reports that conflict.
-
-The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also install another release:
-
-```bash
-TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
-```
-
-For an upstream fix that has landed on `openai/tunnel-client` but has not reached a release yet, the installer can build an exact official commit locally with Go:
-
-```bash
-TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
-```
-
-### tunnel-client v0.0.11 response-deadline bug
-
-OpenAI tunnel-client `v0.0.11` has a known shared-stdio lifecycle bug ([openai/tunnel-client#34](https://github.com/openai/tunnel-client/issues/34)): when a tunneled request reaches its control-plane response deadline, the logical request can close the shared stdio connection. A later write then fails and `tunnel-client` shuts down the whole daemon. Long-running `bash` calls are a practical trigger.
-
-OpenAI fixed the bug on upstream master in commit `c537a6febe25eac696cc25bbe8741ad64727368f`; the issue notes that `v0.0.11` remains affected and the fix will ship in the next release. Until then, install that exact commit with:
-
-```bash
-TUNNEL_CLIENT_COMMIT=c537a6febe25eac696cc25bbe8741ad64727368f ./scripts/tunnel-install.sh
-```
-
-`scripts/tunnel.sh run` and `doctor` warn when the installed client still reports `v0.0.11`.
-
 ## Security
 
 **This server provides local code execution by design.**
@@ -229,13 +205,30 @@ Pi's tools are unsandboxed:
 - `read`, `write`, and `edit` accept absolute filesystem paths.
 - `bash` executes arbitrary shell commands with the permissions of the pi-as-mcp process.
 - `--cwd` does not confine access.
-- A tunnel makes those capabilities remotely invokable by the connected MCP client.
+- A remote MCP deployment makes those capabilities remotely invokable by an authenticated MCP client.
 
-Treat a write-capable tunnel as remote shell access to the account running it. Do not expose credentials, SSH material, browser profiles, or other sensitive host state unless you intend the MCP client to be able to access them.
+Treat a write-capable deployment as remote shell access to the account running it. Use a dedicated host/account or narrower tool set if you need stronger isolation. MCP tool annotations are advisory metadata, not an authorization boundary.
 
-For stronger isolation, run pi-as-mcp and the tunnel client inside a dedicated VM, container, or restricted OS account. For inspection-only workflows, expose only `read`; for shell-assisted inspection, `read,bash` is a narrower surface than all four tools.
+For remote HTTP deployment, bind pi-as-mcp to loopback and put authenticated ingress in front of it. Cloudflare Access mode additionally validates the signed Access assertion at the origin.
 
-MCP tool annotations are advisory metadata for clients, not an authorization boundary.
+## Legacy OpenAI Secure MCP Tunnel
+
+The previous OpenAI Secure MCP Tunnel integration remains in the repository as a migration/fallback path:
+
+```bash
+bun run setup:tunnel
+bun run tunnel:doctor
+bun run tunnel
+bun run tunnel:status
+```
+
+The legacy tunnel wrapper and installer are under `scripts/tunnel*.sh` and `tunnel/`. They are no longer the primary setup path.
+
+OpenAI tunnel-client `v0.0.11` had a shared-stdio response-deadline bug that could turn a single expired request into a daemon shutdown. `scripts/tunnel-install.sh` supports building an exact upstream commit when a fix has landed before a stable release:
+
+```bash
+TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
+```
 
 ## Development
 
@@ -244,41 +237,30 @@ bun run typecheck
 bun run build
 bun run smoke
 bun run smoke:cancel
+bun run smoke:http
+bun run smoke:http-auth
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the protocol smoke suite, and the cancellation test.
-
-The smoke suite exercises:
-
-- MCP tool discovery and annotations
-- text and image reads
-- write/edit/bash behavior
-- argument validation and tool error paths
-- CLI and environment configuration
-- tool subsets
-
-The cancellation test starts a long-lived bash command, aborts the MCP request, verifies that pi kills the process tree rather than leaving it running in the background, and then immediately performs another MCP `bash` call to prove the stdio server itself remains usable after cancellation.
-
-CI runs the suite at the minimum supported Node version and on current Node.
-
-### Source layout
+Source layout:
 
 ```text
 src/
-  index.ts             MCP stdio server, CLI/config, validation, dispatch
-  tools.ts             pi tool factories and MCP annotations
+  index.ts              CLI, MCP server construction, stdio + HTTP transports
+  tools.ts              pi tool factories and MCP annotations
+  cloudflare-auth.ts    Cloudflare Access JWT validation
 scripts/
-  setup.sh             interactive local bootstrap/configuration wizard
-  smoke.mjs            protocol-level smoke tests
-  cancel.mjs           cancellation/process-tree test
-  tunnel-install.sh    checksum-verified tunnel-client installer
-  tunnel.sh            tunnel run/doctor/status/UI operator wrapper
-tunnel/
-  .env.example         local configuration template
-  profile.yaml         OpenAI Secure MCP Tunnel profile
-sandbox/
-  ...                  throwaway default tunnel workspace
+  setup.sh              primary server bootstrap
+  http.sh               Streamable HTTP operator wrapper
+  http-smoke.mjs        HTTP protocol + cancellation regression
+  http-auth-smoke.mjs   Cloudflare Access JWT regression
+  smoke.mjs             stdio protocol smoke tests
+  cancel.mjs            stdio cancellation/process-tree regression
+  setup-openai-tunnel.sh
+  tunnel.sh             legacy OpenAI tunnel wrapper
+  tunnel-install.sh     legacy tunnel-client installer
+server/
+  .env.example          HTTP/Cloudflare configuration template
 ```
 
 ## License
