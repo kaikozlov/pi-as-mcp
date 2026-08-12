@@ -5,6 +5,7 @@
 #   CONTROL_PLANE_API_KEY   -> control_plane.api_key
 #   PI_MCP_CWD              -> pi-as-mcp base working directory
 #   PI_MCP_TOOLS            -> optional tool subset
+#   PI_MCP_HERDR_SESSION    -> optional dedicated Herdr session for the agent tool
 config_version: 1
 control_plane:
   base_url: "https://api.openai.com"

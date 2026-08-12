@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * pi-as-mcp: expose pi's four default coding tools (read, write, edit, bash)
- * as an MCP server over stdio. The agent loop is intentionally out of scope.
+ * as MCP, plus an optional Herdr-backed persistent `agent` tool. The local
+ * inference/agent loop is intentionally out of scope.
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -9,18 +10,22 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import { HerdrRuntime } from "./herdr.js";
 import {
 	ALL_TOOL_NAMES,
-	createPiTools,
+	createTools,
 	MCP_ANNOTATIONS,
-	type PiTool,
-	type PiToolName,
+	PI_TOOL_NAMES,
+	type McpTool,
+	type ToolName,
 } from "./tools.js";
 
 interface Options {
 	cwd: string;
-	tools: PiToolName[];
+	tools: ToolName[];
 	bashMaxSyncSeconds?: number;
+	herdrSession?: string;
+	herdrBin?: string;
 }
 
 interface PackageMetadata {
@@ -64,38 +69,43 @@ const VERSION = PACKAGE.version;
 
 function printHelp(): void {
 	const out = process.stdout;
-	out.write("pi-as-mcp — pi's four default coding tools as an MCP server (stdio)\n\n");
+	out.write("pi-as-mcp — pi coding tools, with optional persistent agents, over MCP stdio\n\n");
 	out.write("Usage: pi-mcp [--cwd <dir>] [--tools <list>]\n\n");
 	out.write("Options:\n");
 	out.write("  -C, --cwd <dir>      Base directory for relative paths.\n");
 	out.write("                       Default: $PI_MCP_CWD, or the process working directory.\n");
 	out.write("  -T, --tools <list>   Comma-separated subset of: " + ALL_TOOL_NAMES.join(", ") + "\n");
-	out.write("                       Default: $PI_MCP_TOOLS, or all four.\n");
+	out.write("                       Default: $PI_MCP_TOOLS, or all enabled tools.\n");
 	out.write("      --bash-max-sync-seconds <n>\n");
 	out.write("                       Optional synchronous wait before managed background handoff.\n");
 	out.write("                       Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or native unlimited bash.\n");
+	out.write("      --herdr-session <name>\n");
+	out.write("                       Enable the agent tool using a dedicated named Herdr session.\n");
+	out.write("                       Default: $PI_MCP_HERDR_SESSION; unset disables Herdr.\n");
+	out.write("      --herdr-bin <path>\n");
+	out.write("                       Herdr executable. Default: $PI_MCP_HERDR_BIN, or herdr on PATH.\n");
 	out.write("  -V, --version        Show the package version.\n");
 	out.write("  -h, --help           Show this help.\n\n");
 	out.write("These are pi's unsandboxed tools. --cwd only controls relative-path resolution;\n");
 	out.write("absolute paths remain accessible, exactly as in pi itself.\n");
 }
 
-const isPiToolName = (value: string): value is PiToolName =>
+const isToolName = (value: string): value is ToolName =>
 	(ALL_TOOL_NAMES as readonly string[]).includes(value);
 
-function parseToolList(value: string, source: string): PiToolName[] {
+function parseToolList(value: string, source: string): ToolName[] {
 	const parsed = value
 		.split(",")
 		.map((item) => item.trim())
 		.filter((item) => item.length > 0);
-	const invalid = parsed.filter((item) => !isPiToolName(item));
+	const invalid = parsed.filter((item) => !isToolName(item));
 
 	if (invalid.length > 0) {
 		throw new Error(`Unknown tool(s) in ${source}: ${invalid.join(", ")}. Valid: ${ALL_TOOL_NAMES.join(", ")}`);
 	}
 	if (parsed.length === 0) throw new Error(`${source} must list at least one tool`);
 
-	return [...new Set(parsed)] as PiToolName[];
+	return [...new Set(parsed)] as ToolName[];
 }
 
 function parsePositiveSeconds(value: string, source: string): number {
@@ -110,12 +120,21 @@ function parseArgs(argv: readonly string[]): Options {
 	const envCwd = process.env.PI_MCP_CWD?.trim();
 	const envTools = process.env.PI_MCP_TOOLS?.trim();
 	const envBashMaxSync = process.env.PI_MCP_BASH_MAX_SYNC_SECONDS?.trim();
+	const envHerdrSession = process.env.PI_MCP_HERDR_SESSION?.trim();
+	const envHerdrBin = process.env.PI_MCP_HERDR_BIN?.trim();
+	let toolsExplicit = !!envTools;
 	const opts: Options = {
 		cwd: envCwd || process.cwd(),
-		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : [...ALL_TOOL_NAMES],
+		tools: envTools
+			? parseToolList(envTools, "$PI_MCP_TOOLS")
+			: envHerdrSession
+				? [...ALL_TOOL_NAMES]
+				: [...PI_TOOL_NAMES],
 		bashMaxSyncSeconds: envBashMaxSync
 			? parsePositiveSeconds(envBashMaxSync, "$PI_MCP_BASH_MAX_SYNC_SECONDS")
 			: undefined,
+		herdrSession: envHerdrSession || undefined,
+		herdrBin: envHerdrBin || undefined,
 	};
 
 	for (let i = 2; i < argv.length; i++) {
@@ -146,6 +165,7 @@ function parseArgs(argv: readonly string[]): Options {
 				const value = next();
 				if (!value) throw new Error(`${arg} requires a comma-separated tool list`);
 				opts.tools = parseToolList(value, arg);
+				toolsExplicit = true;
 				break;
 			}
 			case "--bash-max-sync-seconds": {
@@ -154,9 +174,31 @@ function parseArgs(argv: readonly string[]): Options {
 				opts.bashMaxSyncSeconds = parsePositiveSeconds(value, arg);
 				break;
 			}
+			case "--herdr-session": {
+				const value = next()?.trim();
+				if (!value) throw new Error(`${arg} requires a named Herdr session`);
+				opts.herdrSession = value;
+				break;
+			}
+			case "--herdr-bin": {
+				const value = next()?.trim();
+				if (!value) throw new Error(`${arg} requires an executable path`);
+				opts.herdrBin = value;
+				break;
+			}
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
 		}
+	}
+
+	if (!toolsExplicit) {
+		opts.tools = opts.herdrSession ? [...ALL_TOOL_NAMES] : [...PI_TOOL_NAMES];
+	}
+	if (opts.tools.includes("agent") && !opts.herdrSession) {
+		throw new Error("The agent tool requires --herdr-session or $PI_MCP_HERDR_SESSION");
+	}
+	if (opts.herdrSession === "default") {
+		throw new Error("pi-as-mcp requires a dedicated named Herdr session; 'default' is not allowed");
 	}
 
 	opts.cwd = resolve(opts.cwd);
@@ -207,7 +249,7 @@ type PiExecute = (
 	content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>;
 }>;
 
-function cleanSchema(tool: PiTool): Record<string, unknown> {
+function cleanSchema(tool: McpTool): Record<string, unknown> {
 	// TypeBox schemas contain non-enumerable symbol metadata. The JSON round-trip
 	// leaves the plain JSON Schema that MCP clients and AJV expect.
 	return JSON.parse(JSON.stringify(tool.definition.parameters)) as Record<string, unknown>;
@@ -216,11 +258,28 @@ function cleanSchema(tool: PiTool): Record<string, unknown> {
 async function main(): Promise<void> {
 	installLifecycleDiagnostics();
 	const opts = parseArgs(process.argv);
-	logLifecycle("starting", { cwd: opts.cwd, tools: opts.tools.join(",") });
-	const tools = createPiTools(opts.cwd, opts.tools, {
-		bashMaxSyncSeconds: opts.bashMaxSyncSeconds,
+	logLifecycle("starting", {
+		cwd: opts.cwd,
+		tools: opts.tools.join(","),
+		herdr_session: opts.herdrSession,
 	});
-	const byName = new Map<string, PiTool>(tools.map((tool) => [tool.name, tool]));
+
+	let herdr: HerdrRuntime | undefined;
+	if (opts.tools.includes("agent")) {
+		herdr = new HerdrRuntime({
+			session: opts.herdrSession!,
+			cwd: opts.cwd,
+			binary: opts.herdrBin,
+		});
+		await herdr.ensureReady();
+		logLifecycle("herdr_ready", { session: herdr.session });
+	}
+
+	const tools = createTools(opts.cwd, opts.tools, {
+		bashMaxSyncSeconds: opts.bashMaxSyncSeconds,
+		herdr,
+	});
+	const byName = new Map<string, McpTool>(tools.map((tool) => [tool.name, tool]));
 	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
 	const validatorProvider = new AjvJsonSchemaValidator();
 	const validators = new Map(
@@ -228,8 +287,9 @@ async function main(): Promise<void> {
 	);
 	const guidelines = tools.flatMap(({ definition }) => definition.promptGuidelines ?? []);
 	const instructions = [
-		`pi's coding tools (${opts.tools.join(", ")}) are available in ${opts.cwd}.`,
+		`pi-as-mcp tools (${opts.tools.join(", ")}) are available in ${opts.cwd}.`,
 		"Relative paths resolve against that working directory; absolute paths are honored.",
+		...(herdr ? [`Persistent agents are isolated in the dedicated Herdr session ${herdr.session}.`] : []),
 		...guidelines,
 	].join("\n");
 

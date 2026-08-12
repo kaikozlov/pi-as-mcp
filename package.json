@@ -1,7 +1,7 @@
 {
   "name": "pi-as-mcp",
   "version": "0.1.0",
-  "description": "Expose pi's core coding tools (read, write, edit, bash) as an MCP server over stdio.",
+  "description": "Expose pi's core coding tools as MCP, with optional persistent Herdr-backed coding agents.",
   "type": "module",
   "bin": {
     "pi-mcp": "./dist/index.js"
@@ -29,8 +29,9 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:cancel": "node scripts/cancel.mjs",
     "smoke:sync-cap": "node scripts/smoke-sync-cap.mjs",
+    "smoke:herdr": "node scripts/smoke-herdr.mjs",
     "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap",
+    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr",
     "prepack": "bun run build"
   },
   "dependencies": {

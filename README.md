@@ -1,8 +1,8 @@
 # pi-as-mcp
 
-Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio.
+Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio. Optionally add one **agent** tool backed by a dedicated persistent [Herdr](https://github.com/herdrdev/herdr) session.
 
-The bridge deliberately does not include pi's agent loop. Your MCP client remains the agent; pi-as-mcp supplies pi's actual tool implementations.
+The bridge deliberately does not include pi's agent loop. Your MCP client remains the agent; pi-as-mcp supplies pi's actual tool implementations, while Herdr can provide a separate runtime for persistent interactive coding agents.
 
 ## Why
 
@@ -14,6 +14,8 @@ A capable MCP client does not need a large bespoke coding API. Pi's four-tool in
 - `bash` — run shell commands
 
 That is enough for repository inspection, search, git, builds, tests, formatters, compilers, and essentially any other local development workflow available from the shell.
+
+When Herdr integration is enabled, `agent` adds a deliberately separate primitive for long-lived interactive coding agents. Ordinary commands still use `bash`; Herdr is not used as a hidden replacement for shell execution.
 
 ## How it works
 
@@ -29,10 +31,15 @@ pi-as-mcp
    ├── createReadToolDefinition(cwd)
    ├── createWriteToolDefinition(cwd)
    ├── createEditToolDefinition(cwd)
-   └── createBashToolDefinition(cwd)
+   ├── createBashToolDefinition(cwd)
+   │        │
+   │        ▼
+   │   local machine
+   │
+   └── agent (optional)
             │
             ▼
-       local machine
+      named Herdr session
 ```
 
 The adapter is intentionally thin:
@@ -40,8 +47,9 @@ The adapter is intentionally thin:
 - Pi's TypeBox parameter schemas are advertised as MCP JSON Schema and validated before execution.
 - Pi's text/image results are normalized into MCP content blocks.
 - MCP cancellation is passed into pi's tool execution; for `bash`, pi terminates the spawned process tree.
+- When configured, `agent` targets only pi-as-mcp's explicit named Herdr session; inherited Herdr pane/session/socket context is stripped.
 - Tool errors are returned as MCP tool errors rather than crashing the server.
-- MCP annotations are compatibility metadata for clients. The current profile intentionally advertises all four tools as read-only, idempotent, and closed-world because ChatGPT mobile otherwise refuses to expose the connector; these hints are advisory and do not restrict the actual unsandboxed write/edit/bash behavior.
+- MCP annotations are compatibility metadata for clients. The current profile intentionally advertises every exposed tool as read-only, idempotent, and closed-world because ChatGPT mobile otherwise refuses to expose the connector; these hints are advisory and do not restrict actual write/edit/bash/agent behavior.
 
 There is no tool reimplementation.
 
@@ -49,6 +57,7 @@ There is no tool reimplementation.
 
 - [Bun](https://bun.com) — installs dependencies and runs scripts
 - Node.js **22.19.0 or newer** — runs the server (it is the deployed runtime)
+- [Herdr](https://github.com/herdrdev/herdr) — optional; required only when the `agent` tool is enabled
 
 ## ChatGPT quick start
 
@@ -68,7 +77,8 @@ bun run setup
 2. builds pi-as-mcp,
 3. installs the pinned OpenAI `tunnel-client` and verifies its published SHA-256 checksum,
 4. asks for the local development root, tunnel ID, and runtime API key,
-5. writes the private local configuration to `tunnel/.env` with mode `0600`.
+5. when Herdr is already installed, defaults the optional agent runtime to the dedicated `pi-as-mcp` named session,
+6. writes the private local configuration to `tunnel/.env` with mode `0600`.
 
 For a persistent coding workbench, the default development root is `$HOME/dev`. It is usually more useful to expose that broader root than one individual repository, because changing repositories then requires no MCP restart.
 
@@ -115,25 +125,49 @@ The MCP server itself can be run directly:
 ```text
 Usage: pi-mcp [--cwd <dir>] [--tools <list>]
 
--C, --cwd <dir>       Base directory for relative paths
--T, --tools <list>    Comma-separated subset of read,write,edit,bash
--V, --version         Print the package version
--h, --help            Show help
+-C, --cwd <dir>            Base directory for relative paths
+-T, --tools <list>         Comma-separated subset of read,write,edit,bash,agent
+    --bash-max-sync-seconds <n>
+                            Synchronous bash handoff window
+    --herdr-session <name> Enable agent with a dedicated named Herdr session
+    --herdr-bin <path>     Herdr executable (default: herdr on PATH)
+-V, --version              Print the package version
+-h, --help                 Show help
 ```
 
 The corresponding environment variables are:
 
 ```bash
 PI_MCP_CWD="$HOME/dev"
-PI_MCP_TOOLS="read,write,edit,bash"
+PI_MCP_TOOLS="read,write,edit,bash,agent"
 PI_MCP_BASH_MAX_SYNC_SECONDS="20"
+PI_MCP_HERDR_SESSION="pi-as-mcp"
+# PI_MCP_HERDR_BIN="/opt/homebrew/bin/herdr"
 ```
 
-CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools. `PI_MCP_BASH_MAX_SYNC_SECONDS` is also optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds; a command still running at that point is handed off to a durable local bash session instead of being killed or holding the tunnel request open.
+CLI flags override environment defaults. Without a Herdr session configured, omitting `PI_MCP_TOOLS` exposes the original four pi tools. When `PI_MCP_HERDR_SESSION` / `--herdr-session` is set, omitting the tool list exposes those four plus `agent`. Explicitly requesting `agent` without a Herdr session is an error.
+
+`PI_MCP_HERDR_SESSION=default` is intentionally rejected. The agent runtime must use a dedicated named session so pi-as-mcp never shares panes, focus, sockets, or persisted runtime state with the user's normal Herdr session. The named Herdr server is started automatically when needed and is deliberately left running when pi-as-mcp or the tunnel exits, so its agents survive reconnects and MCP restarts.
+
+`PI_MCP_BASH_MAX_SYNC_SECONDS` is optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds; a command still running at that point is handed off to a durable local bash session instead of being killed or holding the tunnel request open.
 
 `PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
 
-The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` in the gitignored `tunnel/.env`. Changing `PI_MCP_CWD` or `PI_MCP_TOOLS` requires restarting the running tunnel because the MCP subprocess receives them when it starts.
+The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` in the gitignored `tunnel/.env`. Changing the tool/runtime configuration requires restarting the running tunnel because the MCP subprocess receives it when it starts.
+
+### Persistent agents with Herdr
+
+The optional `agent` tool is a compact orchestration surface over the project-owned Herdr session:
+
+- `list` — inspect managed agents and lifecycle state
+- `start` — create an isolated Herdr workspace and launch a supported coding agent
+- `prompt` — submit work with Herdr's atomic prompt+wait, capped below the tunnel deadline; longer work keeps running
+- `wait` — wait briefly for lifecycle state (`idle`, `done`, `blocked`, etc.); waits are capped at 15 seconds for tunnel safety
+- `read` — read agent terminal output
+- `send_keys` — interact with approval/question UIs using logical terminal keys
+- `close` — terminate the agent and remove its dedicated workspace from the pi-as-mcp session
+
+Each started agent receives its own workspace in the dedicated session. Herdr itself owns the PTY and agent process, so closing ChatGPT, restarting the tunnel, or restarting pi-as-mcp does not kill the agent. Reattach manually with `herdr session attach pi-as-mcp`; explicitly stop or delete the runtime with `herdr session stop pi-as-mcp` / `herdr session delete pi-as-mcp`.
 
 ## Generic stdio MCP client
 
@@ -179,7 +213,8 @@ tunnel-client
    ▼
 pi-as-mcp
    │
-   └── read / write / edit / bash
+   ├── read / write / edit / bash
+   └── agent -> dedicated named Herdr session (optional)
 ```
 
 Relevant files:
@@ -233,10 +268,11 @@ OpenAI fixed the bug on upstream master in commit `c537a6febe25eac696cc25bbe8741
 
 **This server provides local code execution by design.**
 
-Pi's tools are unsandboxed:
+Pi's tools are unsandboxed, and the optional Herdr agents inherit the same host-level trust boundary:
 
 - `read`, `write`, and `edit` accept absolute filesystem paths.
 - `bash` executes arbitrary shell commands with the permissions of the pi-as-mcp process.
+- `agent` can launch persistent interactive coding agents that themselves can execute commands and modify files according to their own configuration.
 - `--cwd` does not confine access.
 - A tunnel makes those capabilities remotely invokable by the connected MCP client.
 
@@ -253,10 +289,11 @@ bun run typecheck
 bun run build
 bun run smoke
 bun run smoke:cancel
+bun run smoke:herdr
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the protocol smoke suite, the cancellation test, and the managed-bash handoff regression.
+`bun run test` runs typechecking, a clean build, the core protocol smoke suite, the cancellation test, the managed-bash handoff regression, and the Herdr integration smoke test.
 
 The smoke suite exercises:
 
@@ -271,6 +308,8 @@ The cancellation test starts a long-lived bash command, aborts the MCP request, 
 
 The managed-bash regression starts the server with a very short `PI_MCP_BASH_MAX_SYNC_SECONDS`, proves that a longer command yields a session ID before a remote-style deadline, restarts the MCP subprocess, polls the same job to successful completion, verifies explicit hard timeouts, and confirms that later bash calls remain usable.
 
+The Herdr smoke test uses an isolated fake Herdr executable so CI does not need Herdr installed. It proves first-start versus reuse behavior, exercises the `agent` actions, and verifies that inherited `HERDR_SOCKET_PATH`, pane, tab, workspace, and session variables cannot leak into the dedicated runtime.
+
 CI runs the suite at the minimum supported Node version and on current Node.
 
 ### Source layout
@@ -278,11 +317,14 @@ CI runs the suite at the minimum supported Node version and on current Node.
 ```text
 src/
   index.ts             MCP stdio server, CLI/config, validation, dispatch
-  tools.ts             pi tool factories and MCP annotations
+  tools.ts             tool factories and MCP annotations
   managed-bash.ts      tunnel-safe long-running bash session handoff/polling
+  herdr.ts             dedicated named-session lifecycle and command adapter
+  agent-tool.ts        compact Herdr-backed persistent agent MCP tool
 scripts/
   setup.sh             interactive local bootstrap/configuration wizard
-  smoke.mjs            protocol-level smoke tests
+  smoke.mjs            protocol-level core-tool smoke tests
+  smoke-herdr.mjs      isolated Herdr lifecycle/agent integration smoke test
   cancel.mjs           cancellation/process-tree test
   tunnel-install.sh    checksum-verified tunnel-client installer
   tunnel.sh            tunnel run/doctor/status/UI operator wrapper

@@ -90,6 +90,7 @@ else
 fi
 PI_MCP_TOOLS_VALUE=""
 PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE="20"
+PI_MCP_HERDR_SESSION_VALUE=""
 CONTROL_PLANE_TUNNEL_ID_VALUE=""
 CONTROL_PLANE_API_KEY_VALUE=""
 
@@ -102,12 +103,16 @@ if [ -f tunnel/.env ]; then
 	PI_MCP_CWD_VALUE="${PI_MCP_CWD:-$PI_MCP_CWD_VALUE}"
 	PI_MCP_TOOLS_VALUE="${PI_MCP_TOOLS:-}"
 	PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE="${PI_MCP_BASH_MAX_SYNC_SECONDS:-$PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE}"
+	PI_MCP_HERDR_SESSION_VALUE="${PI_MCP_HERDR_SESSION:-}"
 	CONTROL_PLANE_TUNNEL_ID_VALUE="${CONTROL_PLANE_TUNNEL_ID:-}"
 	CONTROL_PLANE_API_KEY_VALUE="${CONTROL_PLANE_API_KEY:-}"
 fi
 
 if [ "$INTERACTIVE" = true ]; then
 	printf '\n==> Local configuration\n'
+	if [ -z "$PI_MCP_HERDR_SESSION_VALUE" ] && command -v herdr >/dev/null 2>&1; then
+		PI_MCP_HERDR_SESSION_VALUE="pi-as-mcp"
+	fi
 	printf 'Workspace root [%s]: ' "$PI_MCP_CWD_VALUE"
 	IFS= read -r input
 	if [ -n "$input" ]; then PI_MCP_CWD_VALUE="$input"; fi
@@ -147,6 +152,9 @@ EOF
 			printf 'PI_MCP_TOOLS=%s\n' "$(shell_quote "$PI_MCP_TOOLS_VALUE")"
 		fi
 		printf 'PI_MCP_BASH_MAX_SYNC_SECONDS=%s\n' "$(shell_quote "$PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE")"
+		if [ -n "$PI_MCP_HERDR_SESSION_VALUE" ]; then
+			printf 'PI_MCP_HERDR_SESSION=%s\n' "$(shell_quote "$PI_MCP_HERDR_SESSION_VALUE")"
+		fi
 		printf 'CONTROL_PLANE_TUNNEL_ID=%s\n' "$(shell_quote "$CONTROL_PLANE_TUNNEL_ID_VALUE")"
 		printf 'CONTROL_PLANE_API_KEY=%s\n' "$(shell_quote "$CONTROL_PLANE_API_KEY_VALUE")"
 	} > tunnel/.env

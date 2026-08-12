@@ -1,9 +1,10 @@
 /**
- * Bridge between pi's coding tool definitions and MCP tool descriptors.
+ * Tool factory for pi-as-mcp.
  *
- * pi ships four default coding tools (read, write, edit, bash). This module
- * creates those exact tool definitions and adds only MCP metadata; execution
- * remains pi's implementation.
+ * The four core coding tools remain pi's own implementations. When a dedicated
+ * Herdr runtime is configured, one additional `agent` tool exposes persistent
+ * interactive coding-agent orchestration without moving the agent loop into
+ * pi-as-mcp itself.
  */
 import {
 	createBashToolDefinition,
@@ -13,40 +14,35 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { createAgentToolDefinition } from "./agent-tool.js";
+import { HerdrRuntime } from "./herdr.js";
 import { createManagedBashToolDefinition } from "./managed-bash.js";
 
-export const ALL_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
-export type PiToolName = (typeof ALL_TOOL_NAMES)[number];
+export const PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
+export const ALL_TOOL_NAMES = [...PI_TOOL_NAMES, "agent"] as const;
+export type ToolName = (typeof ALL_TOOL_NAMES)[number];
 
-/** A pi tool definition keyed by its canonical tool name. */
-export interface PiTool {
-	name: PiToolName;
+/** A tool definition keyed by its MCP name. */
+export interface McpTool {
+	name: ToolName;
 	definition: ToolDefinition<any, any>;
 }
 
-export interface CreatePiToolsOptions {
-	/**
-	 * Optional ceiling for one synchronous bash invocation. When omitted, pi's
-	 * native no-default-timeout behavior is preserved exactly.
-	 */
+export interface CreateToolsOptions {
+	/** Optional synchronous ceiling before long bash work is handed off. */
 	bashMaxSyncSeconds?: number;
+	/** Dedicated Herdr runtime. Required only when the `agent` tool is enabled. */
+	herdr?: HerdrRuntime;
 }
 
-/**
- * Build the requested pi tool definitions bound to `cwd`.
- *
- * These are pi's unsandboxed tools: relative paths resolve against `cwd`, while
- * absolute paths are accepted. `exposeSessionEnvironment: false` prevents bash
- * from reaching for a pi session/model context that this MCP server does not
- * have.
- */
-export function createPiTools(
+/** Build the requested tool definitions bound to `cwd`. */
+export function createTools(
 	cwd: string,
-	names: readonly PiToolName[],
-	options: CreatePiToolsOptions = {},
-): PiTool[] {
+	names: readonly ToolName[],
+	options: CreateToolsOptions = {},
+): McpTool[] {
 	const wanted = new Set<string>(names);
-	const tools: PiTool[] = [];
+	const tools: McpTool[] = [];
 
 	for (const name of ALL_TOOL_NAMES) {
 		if (!wanted.has(name)) continue;
@@ -68,6 +64,11 @@ export function createPiTools(
 				tools.push({ name, definition });
 				break;
 			}
+			case "agent": {
+				if (!options.herdr) throw new Error("agent tool requires a configured Herdr runtime");
+				tools.push({ name, definition: createAgentToolDefinition(options.herdr, cwd) });
+				break;
+			}
 		}
 	}
 
@@ -75,7 +76,7 @@ export function createPiTools(
 }
 
 /** Advisory MCP hints for client confirmation/UI behavior. */
-export const MCP_ANNOTATIONS: Record<PiToolName, ToolAnnotations> = {
+export const MCP_ANNOTATIONS: Record<ToolName, ToolAnnotations> = {
 	read: {
 		readOnlyHint: true,
 		idempotentHint: true,
@@ -92,6 +93,11 @@ export const MCP_ANNOTATIONS: Record<PiToolName, ToolAnnotations> = {
 		openWorldHint: false,
 	},
 	bash: {
+		readOnlyHint: true,
+		idempotentHint: true,
+		openWorldHint: false,
+	},
+	agent: {
 		readOnlyHint: true,
 		idempotentHint: true,
 		openWorldHint: false,

@@ -148,6 +148,18 @@ async function main() {
 			assert(text(result.content)?.includes("hello mars"), `output: ${text(result.content)}`);
 		});
 
+		await step("agent cannot be enabled without a dedicated Herdr session", async () => {
+			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--tools", "agent"], { encoding: "utf8" });
+			assert(result.status !== 0, "agent without Herdr unexpectedly succeeded");
+			assert(/requires --herdr-session/i.test(result.stderr), `stderr=${result.stderr}`);
+		});
+
+		await step("default Herdr session is rejected", async () => {
+			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--herdr-session", "default"], { encoding: "utf8" });
+			assert(result.status !== 0, "default Herdr session unexpectedly succeeded");
+			assert(/dedicated named herdr session/i.test(result.stderr), `stderr=${result.stderr}`);
+		});
+
 		await step("CLI --version matches package.json", async () => {
 			const pkg = JSON.parse(await readFile("package.json", "utf8"));
 			const result = spawnSync(process.execPath, ["dist/index.js", "--version"], { encoding: "utf8" });
