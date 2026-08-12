@@ -11,6 +11,7 @@
     "LICENSE",
     "scripts/setup.sh",
     "scripts/tunnel-install.sh",
+    "scripts/tunnel-runtime.mjs",
     "scripts/tunnel.sh",
     "tunnel/.env.example",
     "tunnel/profile.yaml"
@@ -20,6 +21,12 @@
     "start": "node dist/index.js",
     "setup": "./scripts/setup.sh",
     "tunnel": "./scripts/tunnel.sh run",
+    "tunnel:start": "./scripts/tunnel.sh start",
+    "tunnel:attach": "./scripts/tunnel.sh attach",
+    "tunnel:session": "./scripts/tunnel.sh session",
+    "tunnel:stop": "./scripts/tunnel.sh stop",
+    "tunnel:info": "./scripts/tunnel.sh info",
+    "tunnel:foreground": "./scripts/tunnel.sh foreground",
     "tunnel:doctor": "./scripts/tunnel.sh doctor",
     "tunnel:status": "./scripts/tunnel.sh status",
     "tunnel:ui": "./scripts/tunnel.sh ui",
@@ -30,8 +37,9 @@
     "smoke:cancel": "node scripts/cancel.mjs",
     "smoke:sync-cap": "node scripts/smoke-sync-cap.mjs",
     "smoke:herdr": "node scripts/smoke-herdr.mjs",
+    "smoke:tunnel-runtime": "node scripts/smoke-tunnel-runtime.mjs",
     "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr",
+    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr && bun run smoke:tunnel-runtime",
     "prepack": "bun run build"
   },
   "dependencies": {

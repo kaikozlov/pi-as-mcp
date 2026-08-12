@@ -102,6 +102,12 @@ console.error("unsupported fake herdr command: " + cmd.join(" ")); process.exit(
 
 		result = await client.callTool({
 			name: "agent",
+			arguments: { action: "start", name: "runtime", kind: "codex", cwd: "." },
+		});
+		assert(result.isError === true && text(result.content)?.includes("reserved"), `reserved runtime name: ${text(result.content)}`);
+
+		result = await client.callTool({
+			name: "agent",
 			arguments: { action: "start", name: "reviewer", kind: "codex", cwd: "." },
 		});
 		assert(result.isError !== true && text(result.content)?.includes("reviewer"), `start: ${text(result.content)}`);

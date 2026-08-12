@@ -13,18 +13,28 @@ usage() {
 Usage: ./scripts/tunnel.sh <command> [args...]
 
 Commands:
-  run       Validate local configuration, then run the tunnel in the foreground
-  doctor    Run tunnel-client doctor --explain
-  status    Probe the live tunnel and require a successful control-plane poll
-  ui        Open the local tunnel admin UI
-  client    Pass remaining arguments directly to tunnel-client
-  help      Show this help
+  run         Ensure the tunnel is running in its dedicated Herdr runtime pane, then attach
+  start       Ensure the persistent Herdr-owned tunnel is running without attaching
+  attach      Attach directly to the persistent tunnel terminal without starting it
+  session     Attach the full dedicated Herdr session UI
+  stop        Stop the tunnel but leave its persistent runtime shell/session alive
+  info        Show the dedicated runtime workspace/pane/terminal IDs and state
+  foreground  Run tunnel-client in the current foreground shell (internal/fallback mode)
+  doctor      Run tunnel-client doctor --explain
+  status      Probe the live tunnel and require a successful control-plane poll
+  ui          Open the local tunnel admin UI
+  client      Pass remaining arguments directly to tunnel-client
+  help        Show this help
 
 Common bun aliases:
   bun run tunnel
-  bun run tunnel:doctor
+  bun run tunnel:start
+  bun run tunnel:attach
+  bun run tunnel:session
+  bun run tunnel:stop
   bun run tunnel:status
   bun run tunnel:ui
+  bun run tunnel:doctor
 
 First-time setup:
   bun run setup
@@ -94,19 +104,49 @@ run_doctor() {
 	"$CLIENT" doctor "$@" --profile-file "$PROFILE"
 }
 
+herdr_runtime_enabled() {
+	[ -n "${PI_MCP_HERDR_SESSION:-}" ]
+}
+
+run_foreground() {
+	ensure_client
+	warn_known_bad_client
+	load_env
+	ensure_build
+	echo "Running tunnel preflight..." >&2
+	"$CLIENT" doctor --explain --profile-file "$PROFILE" >&2
+	echo "Starting tunnel in foreground. Ctrl-C stops it." >&2
+	exec "$CLIENT" run --profile-file "$PROFILE" "$@"
+}
+
+run_runtime() {
+	local runtime_command="$1"
+	shift
+	load_env
+	if ! herdr_runtime_enabled; then
+		if [ "$runtime_command" = "run" ]; then
+			echo "PI_MCP_HERDR_SESSION is not configured; falling back to foreground tunnel lifecycle." >&2
+			run_foreground "$@"
+		fi
+		fail_setup "PI_MCP_HERDR_SESSION is required for tunnel:$runtime_command."
+	fi
+	ensure_client
+	ensure_build
+	exec node ./scripts/tunnel-runtime.mjs "$runtime_command" "$@"
+}
+
 command="${1:-help}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 case "$command" in
-	run|start)
-		ensure_client
-		warn_known_bad_client
-		load_env
-		ensure_build
-		echo "Running tunnel preflight..." >&2
-		"$CLIENT" doctor --explain --profile-file "$PROFILE" >&2
-		echo "Starting tunnel. Keep this process running; Ctrl-C stops it." >&2
-		exec "$CLIENT" run --profile-file "$PROFILE" "$@"
+	run)
+		run_runtime run "$@"
+		;;
+	start|attach|session|stop|info)
+		run_runtime "$command" "$@"
+		;;
+	foreground)
+		run_foreground "$@"
 		;;
 	doctor)
 		ensure_client

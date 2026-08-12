@@ -13,9 +13,11 @@ const assert = (cond, msg) => {
 async function main() {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-mcp-cancel-"));
 	const log = join(cwd, "ticks.txt");
+	const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_MCP_")));
 	const transport = new StdioClientTransport({
 		command: process.execPath,
 		args: ["dist/index.js", "--cwd", cwd],
+		env: baseEnv,
 		stderr: "inherit",
 	});
 	const client = new Client({ name: "cancel-smoke", version: "0.0.0" });

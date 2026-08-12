@@ -186,6 +186,8 @@ Validate and start with:
 Once running:
 
   bun run tunnel:status
+  bun run tunnel:attach
+  bun run tunnel:session
   bun run tunnel:ui
 EOF
 fi

@@ -16,9 +16,10 @@ const text = (content) => {
 	return block?.type === "text" ? block.text : undefined;
 };
 
-const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+const cleanEnv = () =>
+	Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !key.startsWith("PI_MCP_")));
 
-async function connect(args, env) {
+async function connect(args, env = cleanEnv()) {
 	const transport = new StdioClientTransport({
 		command: process.execPath,
 		args: ["dist/index.js", ...args],
@@ -149,13 +150,19 @@ async function main() {
 		});
 
 		await step("agent cannot be enabled without a dedicated Herdr session", async () => {
-			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--tools", "agent"], { encoding: "utf8" });
+			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--tools", "agent"], {
+				encoding: "utf8",
+				env: cleanEnv(),
+			});
 			assert(result.status !== 0, "agent without Herdr unexpectedly succeeded");
 			assert(/requires --herdr-session/i.test(result.stderr), `stderr=${result.stderr}`);
 		});
 
 		await step("default Herdr session is rejected", async () => {
-			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--herdr-session", "default"], { encoding: "utf8" });
+			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--herdr-session", "default"], {
+				encoding: "utf8",
+				env: cleanEnv(),
+			});
 			assert(result.status !== 0, "default Herdr session unexpectedly succeeded");
 			assert(/dedicated named herdr session/i.test(result.stderr), `stderr=${result.stderr}`);
 		});

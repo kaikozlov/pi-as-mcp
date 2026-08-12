@@ -88,13 +88,20 @@ Start the tunnel with one command:
 bun run tunnel
 ```
 
-Startup automatically checks that the build and local configuration are usable, rebuilds stale source if necessary, runs `tunnel-client doctor --explain`, and then starts the tunnel in the foreground. Keep that process running while ChatGPT is using the MCP app; **Ctrl-C stops it**.
+When `PI_MCP_HERDR_SESSION` is configured, that command ensures a reserved `runtime` workspace exists in the dedicated Herdr session, starts the real tunnel process in its persistent root pane if necessary, and then directly attaches your current terminal to that exact Herdr-owned PTY. Detach with **Ctrl-B q** and the tunnel keeps running. **Ctrl-C** is sent to the tunnel itself; when it exits you remain at the persistent shell in the runtime pane. Running `bun run tunnel` again reconnects to the same terminal and scrollback.
+
+Without Herdr configured, `bun run tunnel` retains the original foreground behavior.
 
 In ChatGPT Developer Mode, create a custom app using a **Tunnel** connection and select the associated tunnel.
 
 Useful operator commands:
 
 ```bash
+bun run tunnel:start    # ensure the Herdr-owned tunnel is running; do not attach
+bun run tunnel:attach   # attach directly to the persistent runtime terminal
+bun run tunnel:session  # open the full dedicated Herdr session UI
+bun run tunnel:stop     # stop the tunnel, preserving the runtime shell/session
+bun run tunnel:info     # show runtime workspace/pane/terminal IDs and state
 bun run tunnel:status   # probe health/readiness and require a successful control-plane poll
 bun run tunnel:ui       # open the local tunnel admin UI
 bun run tunnel:doctor   # run the full local preflight explicitly
@@ -147,7 +154,9 @@ PI_MCP_HERDR_SESSION="pi-as-mcp"
 
 CLI flags override environment defaults. Without a Herdr session configured, omitting `PI_MCP_TOOLS` exposes the original four pi tools. When `PI_MCP_HERDR_SESSION` / `--herdr-session` is set, omitting the tool list exposes those four plus `agent`. Explicitly requesting `agent` without a Herdr session is an error.
 
-`PI_MCP_HERDR_SESSION=default` is intentionally rejected. The agent runtime must use a dedicated named session so pi-as-mcp never shares panes, focus, sockets, or persisted runtime state with the user's normal Herdr session. The named Herdr server is started automatically when needed and is deliberately left running when pi-as-mcp or the tunnel exits, so its agents survive reconnects and MCP restarts.
+`PI_MCP_HERDR_SESSION=default` is intentionally rejected. The project runtime must use a dedicated named session so pi-as-mcp never shares panes, focus, sockets, or persisted runtime state with the user's normal Herdr session. The named Herdr server is started automatically when needed and is deliberately left running across tunnel/MCP client disconnects.
+
+For tunneled deployments, that session also owns a reserved Herdr workspace named `runtime`. Its root terminal is the canonical tunnel execution environment. Agent workspaces are separate and disposable; `runtime` is a reserved agent name so agent lifecycle cleanup cannot collide with infrastructure. The operator wrapper discovers the workspace and terminal from live Herdr state rather than PID files.
 
 `PI_MCP_BASH_MAX_SYNC_SECONDS` is optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds; a command still running at that point is handed off to a durable local bash session instead of being killed or holding the tunnel request open.
 
@@ -167,7 +176,9 @@ The optional `agent` tool is a compact orchestration surface over the project-ow
 - `send_keys` — interact with approval/question UIs using logical terminal keys
 - `close` — terminate the agent and remove its dedicated workspace from the pi-as-mcp session
 
-Each started agent receives its own workspace in the dedicated session. Herdr itself owns the PTY and agent process, so closing ChatGPT, restarting the tunnel, or restarting pi-as-mcp does not kill the agent. Reattach manually with `herdr session attach pi-as-mcp`; explicitly stop or delete the runtime with `herdr session stop pi-as-mcp` / `herdr session delete pi-as-mcp`.
+Each started agent receives its own workspace in the dedicated session. Herdr itself owns the PTY and agent process, so closing ChatGPT, restarting the tunnel, or restarting pi-as-mcp does not kill the agent. `runtime` is reserved for the persistent tunnel shell and cannot be used as an agent name.
+
+For operator visibility, `bun run tunnel:attach` attaches directly to the tunnel terminal and `bun run tunnel:session` opens the full session UI. Explicitly stop the whole Herdr runtime with `herdr session stop pi-as-mcp`; delete it only after stopping it with `herdr session delete pi-as-mcp`.
 
 ## Generic stdio MCP client
 
@@ -201,27 +212,33 @@ To expose only a subset, add for example:
 
 ## Tunnel implementation details
 
-The repo-local tunnel support intentionally keeps OpenAI's tunnel client separate from the MCP bridge:
+The repo-local tunnel support keeps OpenAI's tunnel client separate from the MCP bridge while optionally placing the tunnel process itself inside the dedicated Herdr runtime:
 
 ```text
-ChatGPT
-   │
-   │ OpenAI Secure MCP Tunnel
+operator terminal
+   │  direct attach
    ▼
-tunnel-client
-   │ stdio
-   ▼
-pi-as-mcp
+Herdr session: pi-as-mcp
    │
-   ├── read / write / edit / bash
-   └── agent -> dedicated named Herdr session (optional)
+   ├── runtime workspace
+   │      └── tunnel-client
+   │             │ stdio
+   │             ▼
+   │         pi-as-mcp
+   │             ├── read / write / edit / bash
+   │             └── agent ───────────────┐
+   │                                      │
+   └── disposable agent workspaces ◄─────┘
+
+ChatGPT ── OpenAI Secure MCP Tunnel ──► tunnel-client
 ```
 
 Relevant files:
 
 ```text
 scripts/setup.sh             one-command bootstrap/configuration wizard
-scripts/tunnel.sh            run/doctor/status/UI operator wrapper
+scripts/tunnel.sh            tunnel lifecycle/doctor/status/UI operator wrapper
+scripts/tunnel-runtime.mjs   persistent Herdr runtime workspace/PTY lifecycle manager
 scripts/tunnel-install.sh    checksum-verified tunnel-client installer
 tunnel/.env                  private local settings and runtime key (gitignored)
 tunnel/profile.yaml          committed tunnel-client profile
@@ -230,7 +247,7 @@ bin/tunnel-client            pinned downloaded binary (gitignored)
 
 The local tunnel admin UI is configured at `http://127.0.0.1:8080/ui`.
 
-For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with `run`. If another tunnel-client already owns the configured health port, `doctor` reports that conflict.
+For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with the internal `foreground` command. With Herdr configured, the lifecycle manager submits that command into the reserved runtime pane and direct-attaches the operator terminal. If a healthy legacy tunnel already owns the configured health port outside that pane, startup refuses to create a duplicate and asks for a one-time migration instead.
 
 ### Long-running bash over a tunnel
 
@@ -293,7 +310,7 @@ bun run smoke:herdr
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the core protocol smoke suite, the cancellation test, the managed-bash handoff regression, and the Herdr integration smoke test.
+`bun run test` runs typechecking, a clean build, the core protocol smoke suite, the cancellation test, the managed-bash handoff regression, the Herdr agent integration smoke test, and the persistent tunnel-runtime lifecycle smoke test.
 
 The smoke suite exercises:
 
@@ -310,6 +327,8 @@ The managed-bash regression starts the server with a very short `PI_MCP_BASH_MAX
 
 The Herdr smoke test uses an isolated fake Herdr executable so CI does not need Herdr installed. It proves first-start versus reuse behavior, exercises the `agent` actions, and verifies that inherited `HERDR_SOCKET_PATH`, pane, tab, workspace, and session variables cannot leak into the dedicated runtime.
 
+The tunnel-runtime smoke test separately proves that the named Herdr server and reserved `runtime` workspace are created once, subsequent starts reuse the same PTY, direct attach targets the persistent terminal, stop returns to the retained shell, and inherited caller-session variables remain isolated.
+
 CI runs the suite at the minimum supported Node version and on current Node.
 
 ### Source layout
@@ -325,9 +344,11 @@ scripts/
   setup.sh             interactive local bootstrap/configuration wizard
   smoke.mjs            protocol-level core-tool smoke tests
   smoke-herdr.mjs      isolated Herdr lifecycle/agent integration smoke test
+  smoke-tunnel-runtime.mjs  isolated persistent tunnel/PTY lifecycle smoke test
   cancel.mjs           cancellation/process-tree test
+  tunnel-runtime.mjs   persistent Herdr runtime workspace/PTY manager
   tunnel-install.sh    checksum-verified tunnel-client installer
-  tunnel.sh            tunnel run/doctor/status/UI operator wrapper
+  tunnel.sh            tunnel lifecycle/doctor/status/UI operator wrapper
 tunnel/
   .env.example         local configuration template
   profile.yaml         OpenAI Secure MCP Tunnel profile

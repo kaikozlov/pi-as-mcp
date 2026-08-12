@@ -18,11 +18,12 @@ const text = (content) =>
 		.join("\n");
 
 async function connect(cwd) {
+	const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_MCP_")));
 	const transport = new StdioClientTransport({
 		command: process.execPath,
 		args: ["dist/index.js", "--cwd", cwd],
 		env: {
-			...process.env,
+			...baseEnv,
 			PI_MCP_BASH_MAX_SYNC_SECONDS: "0.2",
 		},
 		stderr: "inherit",
