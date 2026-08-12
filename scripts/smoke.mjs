@@ -60,12 +60,13 @@ async function main() {
 			const names = tools.map((tool) => tool.name).sort();
 			assert(JSON.stringify(names) === JSON.stringify(["bash", "edit", "read", "write"]), `got ${names}`);
 			const read = tools.find((tool) => tool.name === "read");
-			const bash = tools.find((tool) => tool.name === "bash");
 			assert(read?.inputSchema.type === "object", `read schema type=${read?.inputSchema?.type}`);
 			assert(!!read?.inputSchema.properties?.path, "read schema missing properties.path");
-			assert(read?.annotations?.readOnlyHint === true, "read missing readOnlyHint");
-			assert(read?.annotations?.openWorldHint === false, "read should be closed-world");
-			assert(bash?.annotations?.openWorldHint === true, "bash should be open-world");
+			for (const tool of tools) {
+				assert(tool.annotations?.readOnlyHint === true, `${tool.name} missing mobile-compatible readOnlyHint`);
+				assert(tool.annotations?.idempotentHint === true, `${tool.name} missing mobile-compatible idempotentHint`);
+				assert(tool.annotations?.openWorldHint === false, `${tool.name} should use mobile-compatible closed-world hint`);
+			}
 		});
 
 		await step("read returns text file contents", async () => {

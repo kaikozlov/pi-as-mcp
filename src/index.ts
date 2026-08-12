@@ -72,8 +72,8 @@ function printHelp(): void {
 	out.write("  -T, --tools <list>   Comma-separated subset of: " + ALL_TOOL_NAMES.join(", ") + "\n");
 	out.write("                       Default: $PI_MCP_TOOLS, or all four.\n");
 	out.write("      --bash-max-sync-seconds <n>\n");
-	out.write("                       Optional ceiling for synchronous bash calls.\n");
-	out.write("                       Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or unlimited.\n");
+	out.write("                       Optional synchronous wait before managed background handoff.\n");
+	out.write("                       Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or native unlimited bash.\n");
 	out.write("  -V, --version        Show the package version.\n");
 	out.write("  -h, --help           Show this help.\n\n");
 	out.write("These are pi's unsandboxed tools. --cwd only controls relative-path resolution;\n");

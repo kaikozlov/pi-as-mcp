@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # Install an OpenAI tunnel-client build into ./bin.
 #
-# Stable release mode (default) downloads the pinned archive and verifies the
-# published SHA-256 checksum:
+# By default, install the pinned official commit that contains the shared-stdio
+# response-deadline fix. Commit builds require git and Go.
+#
+# A stable release can be selected explicitly; release archives are downloaded
+# and verified against the published SHA-256 checksums:
 #   TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
 #
-# Commit mode is for a specific upstream fix that has not reached a release yet.
-# It checks out the exact official commit and builds it locally with Go:
+# Another exact official commit can also be selected explicitly:
 #   TUNNEL_CLIENT_COMMIT=<40-hex-sha> ./scripts/tunnel-install.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${TUNNEL_CLIENT_VERSION:-v0.0.11}"
+PINNED_COMMIT="cf3a41f23bc02382f19198d2f62fa854be9f8faa"
+VERSION="${TUNNEL_CLIENT_VERSION:-}"
 COMMIT="${TUNNEL_CLIENT_COMMIT:-}"
+if [[ -z "$VERSION" && -z "$COMMIT" ]]; then
+	COMMIT="$PINNED_COMMIT"
+fi
 BASE_URL="https://github.com/openai/tunnel-client/releases/download/${VERSION}"
 
 if [[ -n "$COMMIT" ]]; then

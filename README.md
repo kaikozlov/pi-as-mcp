@@ -41,7 +41,7 @@ The adapter is intentionally thin:
 - Pi's text/image results are normalized into MCP content blocks.
 - MCP cancellation is passed into pi's tool execution; for `bash`, pi terminates the spawned process tree.
 - Tool errors are returned as MCP tool errors rather than crashing the server.
-- MCP annotations describe read-only, destructive, idempotent, and open-world behavior to clients.
+- MCP annotations are compatibility metadata for clients. The current profile intentionally advertises all four tools as read-only, idempotent, and closed-world because ChatGPT mobile otherwise refuses to expose the connector; these hints are advisory and do not restrict the actual unsandboxed write/edit/bash behavior.
 
 There is no tool reimplementation.
 
@@ -129,7 +129,7 @@ PI_MCP_TOOLS="read,write,edit,bash"
 PI_MCP_BASH_MAX_SYNC_SECONDS="20"
 ```
 
-CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools. `PI_MCP_BASH_MAX_SYNC_SECONDS` is also optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds so one synchronous shell command finishes comfortably before a remote command-response deadline.
+CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools. `PI_MCP_BASH_MAX_SYNC_SECONDS` is also optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds; a command still running at that point is handed off to a durable local bash session instead of being killed or holding the tunnel request open.
 
 `PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
 
@@ -201,19 +201,23 @@ For a stdio MCP target, `doctor` validates local tunnel configuration but does n
 
 Tunnel commands have a finite response lifetime, while pi's native bash tool intentionally has no default timeout. A synchronous build, test, decompilation, or analysis can therefore outlive the tunnel request even though the local process itself is healthy.
 
-The tunnel setup sets `PI_MCP_BASH_MAX_SYNC_SECONDS=20`. With that setting, pi-as-mcp caps each synchronous bash invocation and advertises explicit guidance to the MCP client: longer work should be started detached (preferably in `tmux`), with output and exit status written to files and checked by short follow-up calls. This keeps the normal pi semantics for direct stdio users while making tunneled sessions fail early and recoverably instead of crossing the remote response deadline.
+The tunnel setup sets `PI_MCP_BASH_MAX_SYNC_SECONDS=20`. In tunneled mode, that value is a **handoff window**, not a command timeout. If a command is still running after 20 seconds, `bash` returns successfully with a `session_id` while the process continues in its own process group with output and exit status persisted under the system temporary directory. Poll it with another `bash` call containing only `session_id`; pass `kill=true` with the session ID to terminate the process tree. For ChatGPT conversations still using an older frozen tool schema, `command=":session <id>"` and `command=":session <id> kill"` provide the same operations without requiring the new input fields. No `tmux` wrapper is required.
 
-The ceiling also protects against a control-plane edge case observed with ChatGPT tunnel calls: requests may reuse the same MCP JSON-RPC ID. `tunnel-client` correctly tombstones a timed-out response ID until its stale response is consumed, so immediate ID reuse can be rejected while that tombstone is live. Returning locally before the tunnel deadline avoids entering that state in normal operation.
+Managed jobs are deliberately independent of the originating MCP request. They remain pollable after the stdio MCP subprocess or tunnel is restarted because the command output, PID, and exit status are stored on disk. An explicit `timeout` argument still means a hard command lifetime and will terminate the process when reached.
 
-To disable the local ceiling for a non-tunneled deployment, omit `PI_MCP_BASH_MAX_SYNC_SECONDS`. To choose another value, set the environment variable or pass `--bash-max-sync-seconds <seconds>`.
+Returning the initial MCP result before the control-plane deadline also avoids the stale-response-ID path in `tunnel-client`: deadline-retired stdio requests are tracked until their late response is consumed, and immediate reuse of the same JSON-RPC ID can otherwise be rejected while that ID remains retired.
 
-The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also install another release:
+To keep pi's original fully synchronous behavior for a non-tunneled deployment, omit `PI_MCP_BASH_MAX_SYNC_SECONDS`. To choose another handoff window, set the environment variable or pass `--bash-max-sync-seconds <seconds>`.
+
+The tunnel-client installer currently defaults to official commit `cf3a41f23bc02382f19198d2f62fa854be9f8faa`, which contains the shared-stdio response-deadline fix and is the build used for this integration. The default commit path builds locally with Git and Go until a suitable fixed stable release is available.
+
+To select a stable release explicitly:
 
 ```bash
 TUNNEL_CLIENT_VERSION=vX.Y.Z ./scripts/tunnel-install.sh
 ```
 
-For an upstream fix that has landed on `openai/tunnel-client` but has not reached a release yet, the installer can build an exact official commit locally with Go:
+To build another exact official commit:
 
 ```bash
 TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
@@ -223,13 +227,7 @@ TUNNEL_CLIENT_COMMIT=<full-40-character-sha> ./scripts/tunnel-install.sh
 
 OpenAI tunnel-client `v0.0.11` has a known shared-stdio lifecycle bug ([openai/tunnel-client#34](https://github.com/openai/tunnel-client/issues/34)): when a tunneled request reaches its control-plane response deadline, the logical request can close the shared stdio connection. A later write then fails and `tunnel-client` shuts down the whole daemon. Long-running `bash` calls are a practical trigger.
 
-OpenAI fixed the bug on upstream master in commit `c537a6febe25eac696cc25bbe8741ad64727368f`; the issue notes that `v0.0.11` remains affected and the fix will ship in the next release. Until then, install that exact commit with:
-
-```bash
-TUNNEL_CLIENT_COMMIT=c537a6febe25eac696cc25bbe8741ad64727368f ./scripts/tunnel-install.sh
-```
-
-`scripts/tunnel.sh run` and `doctor` warn when the installed client still reports `v0.0.11`.
+OpenAI fixed the bug on upstream master in commit `c537a6febe25eac696cc25bbe8741ad64727368f`. The repo pins the later official commit `cf3a41f23bc02382f19198d2f62fa854be9f8faa`, which contains that fix. `scripts/tunnel.sh run` and `doctor` still warn when an installed client reports the affected `v0.0.11` line.
 
 ## Security
 
@@ -258,7 +256,7 @@ bun run smoke:cancel
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the protocol smoke suite, the cancellation test, and the synchronous-bash ceiling regression.
+`bun run test` runs typechecking, a clean build, the protocol smoke suite, the cancellation test, and the managed-bash handoff regression.
 
 The smoke suite exercises:
 
@@ -271,7 +269,7 @@ The smoke suite exercises:
 
 The cancellation test starts a long-lived bash command, aborts the MCP request, verifies that pi kills the process tree rather than leaving it running in the background, and then immediately performs another MCP `bash` call to prove the stdio server itself remains usable after cancellation.
 
-The synchronous-cap regression starts the server with a very short `PI_MCP_BASH_MAX_SYNC_SECONDS`, proves that a longer command is terminated locally before a remote-style deadline, checks that the tmux guidance is advertised in MCP server instructions, and verifies that the next bash call succeeds immediately.
+The managed-bash regression starts the server with a very short `PI_MCP_BASH_MAX_SYNC_SECONDS`, proves that a longer command yields a session ID before a remote-style deadline, restarts the MCP subprocess, polls the same job to successful completion, verifies explicit hard timeouts, and confirms that later bash calls remain usable.
 
 CI runs the suite at the minimum supported Node version and on current Node.
 
@@ -281,6 +279,7 @@ CI runs the suite at the minimum supported Node version and on current Node.
 src/
   index.ts             MCP stdio server, CLI/config, validation, dispatch
   tools.ts             pi tool factories and MCP annotations
+  managed-bash.ts      tunnel-safe long-running bash session handoff/polling
 scripts/
   setup.sh             interactive local bootstrap/configuration wizard
   smoke.mjs            protocol-level smoke tests

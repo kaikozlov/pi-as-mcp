@@ -16,7 +16,7 @@ Installs dependencies with bun, builds pi-as-mcp, installs the pinned OpenAI
 Options:
   --non-interactive       Never prompt. Existing tunnel/.env is preserved;
                           if it is missing, create it from .env.example.
-  --refresh-tunnel-client Re-download and checksum-verify tunnel-client.
+  --refresh-tunnel-client Reinstall the pinned tunnel-client build.
   -h, --help              Show this help.
 EOF
 }
@@ -147,7 +147,7 @@ EOF
 			printf 'PI_MCP_TOOLS=%s\n' "$(shell_quote "$PI_MCP_TOOLS_VALUE")"
 		fi
 		printf 'PI_MCP_BASH_MAX_SYNC_SECONDS=%s\n' "$(shell_quote "$PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE")"
-		printf 'CONTROL_PLANE_TUNNEL_ID=%s\n' "$(shell_quote "$CONTROL_PLANE_TUNNEL_ID_VALUE")"}]}
+		printf 'CONTROL_PLANE_TUNNEL_ID=%s\n' "$(shell_quote "$CONTROL_PLANE_TUNNEL_ID_VALUE")"
 		printf 'CONTROL_PLANE_API_KEY=%s\n' "$(shell_quote "$CONTROL_PLANE_API_KEY_VALUE")"
 	} > tunnel/.env
 	chmod 600 tunnel/.env
