@@ -8,8 +8,10 @@
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
+	createLocalBashOperations,
 	createReadToolDefinition,
 	createWriteToolDefinition,
+	type BashOperations,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -23,6 +25,24 @@ export interface PiTool {
 	definition: ToolDefinition<any, any>;
 }
 
+export interface CreatePiToolsOptions {
+	/**
+	 * Optional ceiling for one synchronous bash invocation. When omitted, pi's
+	 * native no-default-timeout behavior is preserved exactly.
+	 */
+	bashMaxSyncSeconds?: number;
+}
+
+function createCappedBashOperations(maxSyncSeconds: number): BashOperations {
+	const local = createLocalBashOperations();
+	return {
+		exec(command, cwd, options) {
+			const timeout = Math.min(options.timeout ?? maxSyncSeconds, maxSyncSeconds);
+			return local.exec(command, cwd, { ...options, timeout });
+		},
+	};
+}
+
 /**
  * Build the requested pi tool definitions bound to `cwd`.
  *
@@ -31,7 +51,11 @@ export interface PiTool {
  * from reaching for a pi session/model context that this MCP server does not
  * have.
  */
-export function createPiTools(cwd: string, names: readonly PiToolName[]): PiTool[] {
+export function createPiTools(
+	cwd: string,
+	names: readonly PiToolName[],
+	options: CreatePiToolsOptions = {},
+): PiTool[] {
 	const wanted = new Set<string>(names);
 	const tools: PiTool[] = [];
 
@@ -47,12 +71,26 @@ export function createPiTools(cwd: string, names: readonly PiToolName[]): PiTool
 			case "edit":
 				tools.push({ name, definition: createEditToolDefinition(cwd) });
 				break;
-			case "bash":
-				tools.push({
-					name,
-					definition: createBashToolDefinition(cwd, { exposeSessionEnvironment: false }),
+			case "bash": {
+				const maxSyncSeconds = options.bashMaxSyncSeconds;
+				const base = createBashToolDefinition(cwd, {
+					exposeSessionEnvironment: false,
+					operations: maxSyncSeconds === undefined ? undefined : createCappedBashOperations(maxSyncSeconds),
 				});
+				if (maxSyncSeconds === undefined) {
+					tools.push({ name, definition: base });
+					break;
+				}
+
+				const longJobGuidance =
+					`Synchronous bash calls are capped at ${maxSyncSeconds} seconds in this server. ` +
+					"For longer builds, tests, decompilations, or analyses, start the work detached (prefer tmux), " +
+					"redirect output and exit status to files, and poll those files with short bash calls.";
+				base.description = `${base.description} ${longJobGuidance}`;
+				base.promptGuidelines = [...(base.promptGuidelines ?? []), longJobGuidance];
+				tools.push({ name, definition: base });
 				break;
+			}
 		}
 	}
 

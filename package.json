@@ -28,8 +28,9 @@
     "clean": "rm -rf dist",
     "smoke": "node scripts/smoke.mjs",
     "smoke:cancel": "node scripts/cancel.mjs",
+    "smoke:sync-cap": "node scripts/smoke-sync-cap.mjs",
     "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel",
+    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap",
     "prepack": "bun run build"
   },
   "dependencies": {

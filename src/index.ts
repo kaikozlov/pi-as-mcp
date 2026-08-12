@@ -20,6 +20,7 @@ import {
 interface Options {
 	cwd: string;
 	tools: PiToolName[];
+	bashMaxSyncSeconds?: number;
 }
 
 interface PackageMetadata {
@@ -70,6 +71,9 @@ function printHelp(): void {
 	out.write("                       Default: $PI_MCP_CWD, or the process working directory.\n");
 	out.write("  -T, --tools <list>   Comma-separated subset of: " + ALL_TOOL_NAMES.join(", ") + "\n");
 	out.write("                       Default: $PI_MCP_TOOLS, or all four.\n");
+	out.write("      --bash-max-sync-seconds <n>\n");
+	out.write("                       Optional ceiling for synchronous bash calls.\n");
+	out.write("                       Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or unlimited.\n");
 	out.write("  -V, --version        Show the package version.\n");
 	out.write("  -h, --help           Show this help.\n\n");
 	out.write("These are pi's unsandboxed tools. --cwd only controls relative-path resolution;\n");
@@ -94,12 +98,24 @@ function parseToolList(value: string, source: string): PiToolName[] {
 	return [...new Set(parsed)] as PiToolName[];
 }
 
+function parsePositiveSeconds(value: string, source: string): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`${source} must be a positive number of seconds`);
+	}
+	return parsed;
+}
+
 function parseArgs(argv: readonly string[]): Options {
 	const envCwd = process.env.PI_MCP_CWD?.trim();
 	const envTools = process.env.PI_MCP_TOOLS?.trim();
+	const envBashMaxSync = process.env.PI_MCP_BASH_MAX_SYNC_SECONDS?.trim();
 	const opts: Options = {
 		cwd: envCwd || process.cwd(),
 		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : [...ALL_TOOL_NAMES],
+		bashMaxSyncSeconds: envBashMaxSync
+			? parsePositiveSeconds(envBashMaxSync, "$PI_MCP_BASH_MAX_SYNC_SECONDS")
+			: undefined,
 	};
 
 	for (let i = 2; i < argv.length; i++) {
@@ -130,6 +146,12 @@ function parseArgs(argv: readonly string[]): Options {
 				const value = next();
 				if (!value) throw new Error(`${arg} requires a comma-separated tool list`);
 				opts.tools = parseToolList(value, arg);
+				break;
+			}
+			case "--bash-max-sync-seconds": {
+				const value = next();
+				if (!value) throw new Error(`${arg} requires a positive number of seconds`);
+				opts.bashMaxSyncSeconds = parsePositiveSeconds(value, arg);
 				break;
 			}
 			default:
@@ -195,7 +217,9 @@ async function main(): Promise<void> {
 	installLifecycleDiagnostics();
 	const opts = parseArgs(process.argv);
 	logLifecycle("starting", { cwd: opts.cwd, tools: opts.tools.join(",") });
-	const tools = createPiTools(opts.cwd, opts.tools);
+	const tools = createPiTools(opts.cwd, opts.tools, {
+		bashMaxSyncSeconds: opts.bashMaxSyncSeconds,
+	});
 	const byName = new Map<string, PiTool>(tools.map((tool) => [tool.name, tool]));
 	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
 	const validatorProvider = new AjvJsonSchemaValidator();

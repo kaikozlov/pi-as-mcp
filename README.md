@@ -126,9 +126,10 @@ The corresponding environment variables are:
 ```bash
 PI_MCP_CWD="$HOME/dev"
 PI_MCP_TOOLS="read,write,edit,bash"
+PI_MCP_BASH_MAX_SYNC_SECONDS="20"
 ```
 
-CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools.
+CLI flags override environment defaults. `PI_MCP_TOOLS` is optional; omitting it exposes all four tools. `PI_MCP_BASH_MAX_SYNC_SECONDS` is also optional for generic stdio use; when omitted, bash keeps pi's native no-default-timeout behavior. The tunnel setup defaults it to 20 seconds so one synchronous shell command finishes comfortably before a remote command-response deadline.
 
 `PI_MCP_CWD` / `--cwd` is a **path-resolution base, not a sandbox**. Relative paths resolve there, but pi's tools continue to accept absolute paths exactly as they do inside pi itself.
 
@@ -196,6 +197,16 @@ The local tunnel admin UI is configured at `http://127.0.0.1:8080/ui`.
 
 For a stdio MCP target, `doctor` validates local tunnel configuration but does not establish the real long-lived tunnel session. The actual control-plane connection and MCP subprocess lifecycle begin with `run`. If another tunnel-client already owns the configured health port, `doctor` reports that conflict.
 
+### Long-running bash over a tunnel
+
+Tunnel commands have a finite response lifetime, while pi's native bash tool intentionally has no default timeout. A synchronous build, test, decompilation, or analysis can therefore outlive the tunnel request even though the local process itself is healthy.
+
+The tunnel setup sets `PI_MCP_BASH_MAX_SYNC_SECONDS=20`. With that setting, pi-as-mcp caps each synchronous bash invocation and advertises explicit guidance to the MCP client: longer work should be started detached (preferably in `tmux`), with output and exit status written to files and checked by short follow-up calls. This keeps the normal pi semantics for direct stdio users while making tunneled sessions fail early and recoverably instead of crossing the remote response deadline.
+
+The ceiling also protects against a control-plane edge case observed with ChatGPT tunnel calls: requests may reuse the same MCP JSON-RPC ID. `tunnel-client` correctly tombstones a timed-out response ID until its stale response is consumed, so immediate ID reuse can be rejected while that tombstone is live. Returning locally before the tunnel deadline avoids entering that state in normal operation.
+
+To disable the local ceiling for a non-tunneled deployment, omit `PI_MCP_BASH_MAX_SYNC_SECONDS`. To choose another value, set the environment variable or pass `--bash-max-sync-seconds <seconds>`.
+
 The tunnel-client installer defaults to the release pinned in `scripts/tunnel-install.sh`. It can also install another release:
 
 ```bash
@@ -247,7 +258,7 @@ bun run smoke:cancel
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the protocol smoke suite, and the cancellation test.
+`bun run test` runs typechecking, a clean build, the protocol smoke suite, the cancellation test, and the synchronous-bash ceiling regression.
 
 The smoke suite exercises:
 
@@ -259,6 +270,8 @@ The smoke suite exercises:
 - tool subsets
 
 The cancellation test starts a long-lived bash command, aborts the MCP request, verifies that pi kills the process tree rather than leaving it running in the background, and then immediately performs another MCP `bash` call to prove the stdio server itself remains usable after cancellation.
+
+The synchronous-cap regression starts the server with a very short `PI_MCP_BASH_MAX_SYNC_SECONDS`, proves that a longer command is terminated locally before a remote-style deadline, checks that the tmux guidance is advertised in MCP server instructions, and verifies that the next bash call succeeds immediately.
 
 CI runs the suite at the minimum supported Node version and on current Node.
 
