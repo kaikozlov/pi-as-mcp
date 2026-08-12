@@ -13,7 +13,7 @@ usage() {
 Usage: ./scripts/tunnel.sh <command> [args...]
 
 Commands:
-  run         Ensure the tunnel is running in its dedicated Herdr runtime pane, then attach
+  run         Ensure the tunnel is running, then enter the dedicated Herdr session UI
   start       Ensure the persistent Herdr-owned tunnel is running without attaching
   attach      Attach directly to the persistent tunnel terminal without starting it
   session     Attach the full dedicated Herdr session UI

@@ -67,6 +67,7 @@ if (cmd[0] === "pane" && cmd[1] === "process-info") {
 if (cmd[0] === "pane" && cmd[1] === "run") { state.startChecks = 2; writeState(state); process.exit(0); }
 if (cmd[0] === "pane" && cmd[1] === "send-keys") { state.tunnel = false; writeState(state); console.log(JSON.stringify({result:{sent:true}})); process.exit(0); }
 if (cmd[0] === "pane" && cmd[1] === "read") { console.log("fake runtime output"); process.exit(0); }
+if (cmd.length === 0) { console.log("FAKE_SESSION_ATTACH_OK"); process.exit(0); }
 if (cmd[0] === "terminal" && cmd[1] === "attach") { console.log("FAKE_ATTACH_OK"); process.exit(0); }
 console.error("unsupported: " + cmd.join(" ")); process.exit(2);
 `);
@@ -87,12 +88,16 @@ const baseEnv = {
 	HERDR_WORKSPACE_ID: "default",
 };
 
-function runtime(...args) {
+function runtimeWithEnv(env, ...args) {
 	return spawnSync(process.execPath, ["scripts/tunnel-runtime.mjs", ...args], {
 		cwd: new URL("..", import.meta.url).pathname,
-		env: baseEnv,
+		env,
 		encoding: "utf8",
 	});
+}
+
+function runtime(...args) {
+	return runtimeWithEnv(baseEnv, ...args);
 }
 
 try {
@@ -102,6 +107,19 @@ try {
 
 	result = runtime("start");
 	assert(result.status === 0, `second start failed: ${result.stderr}`);
+
+	result = runtime("run");
+	assert(result.status !== 0 && /Cannot switch from the current Herdr UI/.test(result.stderr), `nested run should refuse: ${result.stdout} ${result.stderr}`);
+
+	const hostEnv = { ...baseEnv };
+	delete hostEnv.HERDR_ENV;
+	delete hostEnv.HERDR_SESSION;
+	delete hostEnv.HERDR_SOCKET_PATH;
+	delete hostEnv.HERDR_PANE_ID;
+	delete hostEnv.HERDR_TAB_ID;
+	delete hostEnv.HERDR_WORKSPACE_ID;
+	result = runtimeWithEnv(hostEnv, "run");
+	assert(result.status === 0 && result.stdout.includes("FAKE_SESSION_ATTACH_OK"), `host run did not enter named session: ${result.stdout} ${result.stderr}`);
 
 	result = runtime("attach");
 	assert(result.status === 0 && result.stdout.includes("FAKE_ATTACH_OK"), `attach failed: ${result.stdout} ${result.stderr}`);
@@ -121,6 +139,7 @@ try {
 			assert(value === undefined, `inherited ${key} leaked to Herdr child: ${value}`);
 		}
 	}
+	assert(calls.some((call) => JSON.stringify(call.args) === JSON.stringify(["--session","pi-as-mcp-test"])), "run should attach the full named session UI");
 
 	console.log("Tunnel runtime smoke passed");
 } finally {

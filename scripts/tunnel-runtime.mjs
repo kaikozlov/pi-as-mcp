@@ -280,10 +280,29 @@ function attach(runtime, takeover) {
 	return result.status ?? 0;
 }
 
+function sessionClientEnv() {
+	const env = cleanEnv();
+	// Preserve only Herdr's nested-client sentinel. Session/socket/pane routing
+	// remains stripped so --session is the sole target selector, but a caller
+	// already inside another Herdr UI is not allowed to silently nest clients.
+	if (process.env.HERDR_ENV) env.HERDR_ENV = process.env.HERDR_ENV;
+	return env;
+}
+
 function attachSession() {
-	const result = spawnSync(HERDR, ["--session", SESSION], { cwd: ROOT, env: cleanEnv(), stdio: "inherit" });
+	const result = spawnSync(HERDR, ["--session", SESSION], { cwd: ROOT, env: sessionClientEnv(), stdio: "inherit" });
 	if (result.error) throw result.error;
 	return result.status ?? 0;
+}
+
+function assertCanAttachSession() {
+	if (process.env.HERDR_ENV === "1") {
+		throw new Error(
+			`Cannot switch from the current Herdr UI into session '${SESSION}' from inside a Herdr-managed pane. ` +
+			"Detach the current Herdr client with Ctrl-B q and rerun `bun run tunnel` from the host/SSH shell. " +
+			"Use `bun run tunnel:start` if you only want to ensure the dedicated runtime is running without attaching.",
+		);
+	}
 }
 
 function stopTunnel() {
@@ -324,8 +343,9 @@ const takeover = process.argv.slice(3).includes("--takeover");
 try {
 	switch (command) {
 		case "run": {
-			const runtime = withLifecycleLock(() => ensureTunnel());
-			process.exitCode = attach(runtime, takeover);
+			assertCanAttachSession();
+			withLifecycleLock(() => ensureTunnel());
+			process.exitCode = attachSession();
 			break;
 		}
 		case "start": {

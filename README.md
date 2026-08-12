@@ -88,7 +88,9 @@ Start the tunnel with one command:
 bun run tunnel
 ```
 
-When `PI_MCP_HERDR_SESSION` is configured, that command ensures a reserved `runtime` workspace exists in the dedicated Herdr session, starts the real tunnel process in its persistent root pane if necessary, and then directly attaches your current terminal to that exact Herdr-owned PTY. Detach with **Ctrl-B q** and the tunnel keeps running. **Ctrl-C** is sent to the tunnel itself; when it exits you remain at the persistent shell in the runtime pane. Running `bun run tunnel` again reconnects to the same terminal and scrollback.
+When `PI_MCP_HERDR_SESSION` is configured, that command ensures a reserved `runtime` workspace exists in the dedicated Herdr session, starts the real tunnel process in its persistent root pane if necessary, and then opens the **full named Herdr session UI** for that dedicated session. Detach with **Ctrl-B q** and the tunnel keeps running. Running `bun run tunnel` again from a normal host/SSH shell reconnects to the same `pi-as-mcp` session, including the persistent runtime pane and its scrollback.
+
+Herdr does not support switching full session UIs from inside an already-managed Herdr pane without nesting clients. `bun run tunnel` therefore refuses to attach when `HERDR_ENV=1`; detach the current Herdr UI first, then rerun it from the underlying host/SSH shell. `bun run tunnel:start` remains safe to use from inside another Herdr session when you only want to ensure the dedicated runtime is running.
 
 Without Herdr configured, `bun run tunnel` retains the original foreground behavior.
 
@@ -216,7 +218,7 @@ The repo-local tunnel support keeps OpenAI's tunnel client separate from the MCP
 
 ```text
 operator terminal
-   │  direct attach
+   │  full named-session attach
    ▼
 Herdr session: pi-as-mcp
    │
@@ -327,7 +329,7 @@ The managed-bash regression starts the server with a very short `PI_MCP_BASH_MAX
 
 The Herdr smoke test uses an isolated fake Herdr executable so CI does not need Herdr installed. It proves first-start versus reuse behavior, exercises the `agent` actions, and verifies that inherited `HERDR_SOCKET_PATH`, pane, tab, workspace, and session variables cannot leak into the dedicated runtime.
 
-The tunnel-runtime smoke test separately proves that the named Herdr server and reserved `runtime` workspace are created once, subsequent starts reuse the same PTY, direct attach targets the persistent terminal, stop returns to the retained shell, and inherited caller-session variables remain isolated.
+The tunnel-runtime smoke test separately proves that the named Herdr server and reserved `runtime` workspace are created once, subsequent starts reuse the same PTY, `run` targets the full dedicated named-session UI, explicit direct attach targets the persistent terminal, stop returns to the retained shell, and inherited caller-session routing variables remain isolated.
 
 CI runs the suite at the minimum supported Node version and on current Node.
 
