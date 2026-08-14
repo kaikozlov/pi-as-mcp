@@ -43,7 +43,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
