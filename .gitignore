@@ -8,3 +8,6 @@ REFERENCE/
 /bin/
 # Local tunnel secrets.
 /tunnel/.env
+/server/.env
+/logs/
+/server/*.pid

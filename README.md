@@ -1,6 +1,6 @@
 # pi-as-mcp
 
-Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio. Optionally add one **agent** tool backed by a dedicated persistent [Herdr](https://github.com/herdrdev/herdr) session.
+Expose [pi](https://github.com/earendil-works/pi)'s four default coding tools — **read**, **write**, **edit**, and **bash** — as a Model Context Protocol server over stdio or Streamable HTTP. Optionally add one **agent** tool backed by a dedicated persistent [Herdr](https://github.com/herdrdev/herdr) session.
 
 The bridge deliberately does not include pi's agent loop. Your MCP client remains the agent; pi-as-mcp supplies pi's actual tool implementations, while Herdr can provide a separate runtime for persistent interactive coding agents.
 
@@ -24,6 +24,7 @@ pi-as-mcp depends on the published `@earendil-works/pi-coding-agent` package and
 ```text
 MCP client
    │
+   │ stdio or Streamable HTTP
    │ tools/list + tools/call
    ▼
 pi-as-mcp
@@ -61,7 +62,7 @@ There is no tool reimplementation.
 
 ## ChatGPT quick start
 
-The only OpenAI-side prerequisites are a Secure MCP Tunnel and a runtime API key. Create those in the OpenAI Platform, and associate the tunnel with the ChatGPT workspace you intend to use.
+For the OpenAI Secure MCP Tunnel path, create a Secure MCP Tunnel and runtime API key in the OpenAI Platform, then associate the tunnel with the ChatGPT workspace you intend to use. A direct Streamable HTTP + Cloudflare Access path is documented below and does not use OpenAI tunnel-client.
 
 Then clone the repo and run the setup wizard:
 
@@ -109,7 +110,27 @@ bun run tunnel:ui       # open the local tunnel admin UI
 bun run tunnel:doctor   # run the full local preflight explicitly
 ```
 
-That is the normal setup and day-to-day flow.
+That is the normal Secure MCP Tunnel setup and day-to-day flow.
+
+### Direct Streamable HTTP through Cloudflare
+
+The same MCP server can also listen directly over Streamable HTTP. This is useful as an independent transport path and keeps the OpenAI Secure MCP Tunnel optional rather than architectural. The HTTP server uses the same tool factory, managed-bash handoff, and optional Herdr `agent` runtime as stdio.
+
+Run `bun run setup:http` (or copy `server/.env.example` to the gitignored `server/.env`) and configure the Cloudflare Access team domain, application audience, public hostname allowlist, and local working directory. This setup is independent of `bun run setup`, which continues to manage the OpenAI Secure MCP Tunnel. Keep the HTTP origin bound to loopback; Cloudflare Tunnel provides ingress.
+
+```bash
+bun run http:start
+bun run cloudflare:start
+
+bun run http:status
+bun run cloudflare:status
+```
+
+Useful lifecycle commands are `http:stop`, `http:logs`, `cloudflare:stop`, and `cloudflare:logs`. `scripts/cloudflare.sh` uses `$CLOUDFLARED_CONFIG` or `~/.cloudflared/config.yml`, so it works with an existing named Cloudflare Tunnel without copying tunnel credentials into this repository.
+
+For ChatGPT, create a custom MCP app using the public HTTPS Streamable HTTP endpoint (for example `https://mcp.example.com/mcp`) and Cloudflare Access Managed OAuth. Cloudflare authenticates the OAuth bearer token at the edge and injects the signed `Cf-Access-Jwt-Assertion`; pi-as-mcp verifies that assertion against the Access JWKS, issuer, and application audience before handling MCP requests.
+
+Set `PI_MCP_LOG_FILE` to retain JSONL lifecycle diagnostics. The HTTP transport records request start/end, early connection closes, MCP session open/close, tool-call duration, cancellation state, and process signals without logging bearer tokens. This is particularly useful when comparing long-running ChatGPT behavior across the Secure Tunnel and direct HTTP paths.
 
 ### Re-running setup
 
@@ -140,6 +161,12 @@ Usage: pi-mcp [--cwd <dir>] [--tools <list>]
                             Synchronous bash handoff window
     --herdr-session <name> Enable agent with a dedicated named Herdr session
     --herdr-bin <path>     Herdr executable (default: herdr on PATH)
+    --transport <kind>     stdio or http
+    --host <host>          HTTP bind host (default 127.0.0.1)
+    --port <port>          HTTP port (default 3333)
+    --path <path>          MCP HTTP path (default /mcp)
+    --auth <kind>          cloudflare-access or none
+    --allowed-hosts <list> Extra HTTP Host allowlist
 -V, --version              Print the package version
 -h, --help                 Show help
 ```
@@ -152,6 +179,13 @@ PI_MCP_TOOLS="read,write,edit,bash,agent"
 PI_MCP_BASH_MAX_SYNC_SECONDS="20"
 PI_MCP_HERDR_SESSION="pi-as-mcp"
 # PI_MCP_HERDR_BIN="/opt/homebrew/bin/herdr"
+# PI_MCP_TRANSPORT="http"
+# PI_MCP_HTTP_HOST="127.0.0.1"
+# PI_MCP_HTTP_PORT="3333"
+# PI_MCP_HTTP_PATH="/mcp"
+# PI_MCP_HTTP_ALLOWED_HOSTS="mcp.example.com"
+# PI_MCP_AUTH="cloudflare-access"
+# PI_MCP_LOG_FILE="./logs/http-lifecycle.jsonl"
 ```
 
 CLI flags override environment defaults. Without a Herdr session configured, omitting `PI_MCP_TOOLS` exposes the original four pi tools. When `PI_MCP_HERDR_SESSION` / `--herdr-session` is set, omitting the tool list exposes those four plus `agent`. Explicitly requesting `agent` without a Herdr session is an error.
@@ -312,7 +346,7 @@ bun run smoke:herdr
 bun run test
 ```
 
-`bun run test` runs typechecking, a clean build, the core protocol smoke suite, the cancellation test, the managed-bash handoff regression, the Herdr agent integration smoke test, and the persistent tunnel-runtime lifecycle smoke test.
+`bun run test` runs typechecking, a clean build, the core protocol smoke suite, cancellation and managed-bash regressions, Herdr agent integration, direct Streamable HTTP and Cloudflare Access authentication smokes, and the persistent Secure Tunnel runtime lifecycle smoke test.
 
 The smoke suite exercises:
 

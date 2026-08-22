@@ -1,7 +1,7 @@
 {
   "name": "pi-as-mcp",
   "version": "0.1.0",
-  "description": "Expose pi's core coding tools as MCP, with optional persistent Herdr-backed coding agents.",
+  "description": "Expose pi core coding tools as MCP over stdio or Streamable HTTP, with optional persistent Herdr-backed coding agents.",
   "type": "module",
   "bin": {
     "pi-mcp": "./dist/index.js"
@@ -14,7 +14,11 @@
     "scripts/tunnel-runtime.mjs",
     "scripts/tunnel.sh",
     "tunnel/.env.example",
-    "tunnel/profile.yaml"
+    "tunnel/profile.yaml",
+    "scripts/http.sh",
+    "server/.env.example",
+    "scripts/cloudflare.sh",
+    "scripts/setup-http.sh"
   ],
   "scripts": {
     "dev": "bun src/index.ts",
@@ -39,16 +43,32 @@
     "smoke:herdr": "node scripts/smoke-herdr.mjs",
     "smoke:tunnel-runtime": "node scripts/smoke-tunnel-runtime.mjs",
     "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr && bun run smoke:tunnel-runtime",
-    "prepack": "bun run build"
+    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr && bun run smoke:http && bun run smoke:http-auth && bun run smoke:tunnel-runtime",
+    "prepack": "bun run build",
+    "http": "./scripts/http.sh run",
+    "http:status": "./scripts/http.sh status",
+    "smoke:http": "node scripts/http-smoke.mjs",
+    "smoke:http-auth": "node scripts/http-auth-smoke.mjs",
+    "http:start": "./scripts/http.sh start",
+    "http:stop": "./scripts/http.sh stop",
+    "http:logs": "./scripts/http.sh logs",
+    "cloudflare": "./scripts/cloudflare.sh run",
+    "cloudflare:start": "./scripts/cloudflare.sh start",
+    "cloudflare:stop": "./scripts/cloudflare.sh stop",
+    "cloudflare:status": "./scripts/cloudflare.sh status",
+    "cloudflare:logs": "./scripts/cloudflare.sh logs",
+    "setup:http": "./scripts/setup-http.sh"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "express": "^5.2.1",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "@types/express": "^5.0.3"
   },
   "engines": {
     "node": ">=22.19.0"
