@@ -74,11 +74,11 @@ const running = () => existsSync(state);
 const readState = () => running() ? JSON.parse(readFileSync(state, "utf8")) : {agents:[], nextWorkspace:1};
 const saveState = (value) => writeFileSync(state, JSON.stringify(value));
 if (args[0] === "agent" && args[1] === "start" && args[2] === "--help") {
-  console.log("Start a supported interactive agent in an existing pane\\n\\n      --kind <KIND>\\n          Supported agent kind and canonical executable\\n          [possible values: pi, codex, hermes, cursor]");
+  console.log("Start a supported interactive agent in an existing pane\\n\\n      --kind <KIND>\\n          Supported agent kind and canonical executable\\n          [possible values: pi, codex, omp, hermes, cursor]");
   process.exit(0);
 }
 if (args[0] === "integration" && args[1] === "status") {
-  console.log("pi: current (v8) (/fake/pi)\\ncodex: current (v8) (/fake/codex)\\nhermes: outdated (v4) (/fake/hermes)\\ncursor: not installed (/fake/cursor)");
+  console.log("pi: current (v8) (/fake/pi)\\ncodex: current (v8) (/fake/codex)\\nomp: current (v8) (/fake/omp)\\nhermes: outdated (v4) (/fake/hermes)\\ncursor: not installed (/fake/cursor)");
   process.exit(0);
 }
 if (args[0] === "session" && args[1] === "list") {
@@ -136,16 +136,23 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 		}
 		assert(!names.includes("agent"), "legacy mega-tool should not be model-facing");
 		const spawn = tools.find((tool) => tool.name === "spawn_agent");
-		assert(spawn.inputSchema.properties.kind.enum.join(",") === "pi,codex,hermes", `installed kind enum: ${JSON.stringify(spawn.inputSchema)}`);
-		assert(spawn.description.includes("Pi coding agent") && spawn.description.includes("Hermes Agent") && !spawn.description.includes("Cursor coding agent"), `installed catalog filtering: ${spawn.description}`);
+		assert(spawn.inputSchema.properties.kind.enum.join(",") === "pi,codex,omp,hermes", `installed kind enum: ${JSON.stringify(spawn.inputSchema)}`);
+		assert(spawn.description.includes("Default agent: omp") && spawn.description.includes("Pi coding agent") && spawn.description.includes("Hermes Agent") && !spawn.description.includes("Cursor coding agent"), `installed catalog/default: ${spawn.description}`);
+		assert(spawn.inputSchema.required.join(",") === "message", `kind should be optional: ${JSON.stringify(spawn.inputSchema)}`);
 
 		let result = await client.callTool({ name: "list_agents", arguments: {} });
 		let payload = json(result.content);
-		assert(result.isError !== true && payload.kinds.length === 3, `list_agents: ${text(result.content)}`);
-		assert(payload.kinds[0].integration === "current" && payload.kinds[2].integration === "outdated", `catalog integration: ${text(result.content)}`);
+		assert(result.isError !== true && payload.default_agent === "omp" && payload.kinds.length === 4, `list_agents: ${text(result.content)}`);
+		assert(payload.kinds[0].integration === "current" && payload.kinds[3].integration === "outdated", `catalog integration: ${text(result.content)}`);
 
 		result = await client.callTool({ name: "spawn_agent", arguments: { kind: "hermes", name: "runtime", message: "must fail", cwd: "." } });
 		assert(result.isError === true && text(result.content).includes("reserved"), `reserved agent name: ${text(result.content)}`);
+
+		result = await client.callTool({ name: "spawn_agent", arguments: { message: "Default backend", cwd: "." } });
+		payload = json(result.content);
+		assert(result.isError !== true && payload.kind === "omp" && payload.name === "omp", `default omp spawn: ${text(result.content)}`);
+		result = await client.callTool({ name: "close_agent", arguments: { target: "omp" } });
+		assert(result.isError !== true, `default omp cleanup: ${text(result.content)}`);
 
 		result = await client.callTool({ name: "spawn_agent", arguments: { kind: "hermes", message: "Audit the diff", cwd: "." } });
 		payload = json(result.content);
@@ -212,6 +219,26 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 		clients.push(client2);
 		await client2.listTools();
 		await client2.close();
+		clients.pop();
+
+		const explicitDefault = await connect(cwd, fakeHerdr, state, log, { PI_MCP_DEFAULT_AGENT: "pi" });
+		clients.push(explicitDefault);
+		result = await explicitDefault.callTool({ name: "list_agents", arguments: {} });
+		payload = json(result.content);
+		assert(payload.default_agent === "pi", `explicit default agent: ${text(result.content)}`);
+		result = await explicitDefault.callTool({ name: "spawn_agent", arguments: { message: "explicit default" } });
+		payload = json(result.content);
+		assert(result.isError !== true && payload.kind === "pi", `explicit default spawn: ${text(result.content)}`);
+		result = await explicitDefault.callTool({ name: "close_agent", arguments: { target: "pi" } });
+		assert(result.isError !== true, `explicit default cleanup: ${text(result.content)}`);
+		await explicitDefault.close();
+		clients.pop();
+
+		const invalidDefault = await connect(cwd, fakeHerdr, state, log, { PI_MCP_DEFAULT_AGENT: "cursor" });
+		clients.push(invalidDefault);
+		const invalidDefaultTools = await invalidDefault.listTools();
+		assert(invalidDefaultTools.tools.some((tool) => tool.name === "read") && !invalidDefaultTools.tools.some((tool) => tool.name === "spawn_agent"), "invalid default should degrade only subagent tools");
+		await invalidDefault.close();
 		clients.pop();
 
 		const limited = await connect(cwd, fakeHerdr, state, log, { PI_MCP_MAX_AGENTS: "1" });

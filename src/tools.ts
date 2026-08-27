@@ -35,6 +35,8 @@ export interface CreateToolsOptions {
 	herdr?: HerdrRuntime;
 	/** Maximum retained agent workspaces; 0 disables the limit. */
 	maxAgents?: number;
+	/** Explicit default agent kind; createAgentToolDefinitions prefers omp when omitted. */
+	defaultAgent?: string;
 }
 
 function wantsAnyAgentTool(names: readonly ToolSelector[]): boolean {
@@ -75,7 +77,7 @@ export function createTools(
 
 	if (wantsAnyAgentTool(names)) {
 		if (!options.herdr) throw new Error("agent tools require a configured Herdr runtime");
-		const allAgentTools = createAgentToolDefinitions(options.herdr, cwd, { maxAgents: options.maxAgents });
+		const allAgentTools = createAgentToolDefinitions(options.herdr, cwd, { maxAgents: options.maxAgents, defaultAgent: options.defaultAgent });
 		for (const tool of allAgentTools) {
 			if (wanted.has("agent") || wanted.has(tool.name)) tools.push(tool);
 		}

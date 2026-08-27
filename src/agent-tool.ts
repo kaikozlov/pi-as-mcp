@@ -58,7 +58,7 @@ interface AgentResponse {
 }
 
 interface SpawnAgentInput {
-	kind: string;
+	kind?: string;
 	message: string;
 	name?: string;
 	cwd?: string;
@@ -100,6 +100,8 @@ interface CloseAgentInput extends TargetInput {
 export interface CreateAgentToolsOptions {
 	/** Maximum retained Herdr agent workspaces. 0 disables the limit. */
 	maxAgents?: number;
+	/** Explicit default agent kind. When omitted, prefer omp when installed. */
+	defaultAgent?: string;
 }
 
 function textResult(text: string) {
@@ -278,9 +280,9 @@ function installedKinds(catalog: readonly AgentCatalogEntry[]): string[] {
 	return installedCatalog(catalog).map((entry) => entry.kind);
 }
 
-function commonAnnotationsDescription(catalog: readonly AgentCatalogEntry[]): string {
+function commonAnnotationsDescription(catalog: readonly AgentCatalogEntry[], defaultAgent: string): string {
 	const installed = installedCatalog(catalog);
-	return `Installed Herdr agent integrations:\n${renderAgentCatalog(installed)}\nChoose deliberately from this list; do not invent a kind or select one merely because it is familiar or appears first.`;
+	return `Default agent: ${defaultAgent}\nInstalled Herdr agent integrations:\n${renderAgentCatalog(installed)}\nOmit kind to use the default; specify kind only when you have a concrete reason to override it.`;
 }
 
 /** Build model-facing subagent tools over the persistent Herdr runtime. */
@@ -293,7 +295,12 @@ export function createAgentToolDefinitions(
 	const kinds = installedKinds(catalog);
 	if (kinds.length === 0) throw new Error("No installed Herdr agent integrations were discovered");
 	const maxAgents = options.maxAgents ?? 0;
-	const catalogDescription = commonAnnotationsDescription(catalog);
+	const configuredDefault = options.defaultAgent?.trim();
+	if (configuredDefault && !kinds.includes(configuredDefault)) {
+		throw new Error(`Configured default agent '${configuredDefault}' does not have an installed Herdr integration. Available: ${kinds.join(", ")}`);
+	}
+	const defaultAgent = configuredDefault ?? (kinds.includes("omp") ? "omp" : kinds[0]!);
+	const catalogDescription = commonAnnotationsDescription(catalog, defaultAgent);
 	const tools: Array<{ name: AgentToolName; definition: ToolDefinition<any, any> }> = [];
 	const reservedSpawnNames = new Set<string>();
 	let pendingSpawns = 0;
@@ -303,12 +310,13 @@ export function createAgentToolDefinitions(
 		definition: {
 			name: "list_agents",
 			label: "List Agents",
-			description: `List persistent agents and the agent kinds this installed Herdr supports. ${catalogDescription}`,
+			description: `List persistent agents and the agent kinds with installed Herdr integrations. ${catalogDescription}`,
 			parameters: { type: "object", properties: {}, additionalProperties: false } as any,
 			execute: async () => {
 				const [agents, freshCatalog] = await Promise.all([listAgentInfos(runtime), runtime.agentCatalog(true)]);
 				const installed = installedCatalog(freshCatalog);
 				return jsonResult({
+					default_agent: defaultAgent,
 					kinds: catalogEntriesForModel(installed),
 					agents: agents.map(compactAgent),
 					counts: {
@@ -331,16 +339,16 @@ export function createAgentToolDefinitions(
 				`Start a persistent coding agent in its own Herdr workspace and immediately submit its first task. ` +
 				`The call returns after submission instead of waiting for task completion; use wait_agent to collect results.\n${catalogDescription}`,
 			promptGuidelines: [
-				"When delegating, choose an agent kind from the discovered catalog deliberately; honor an explicit user choice and never default to a backend merely because its name is familiar.",
+				`When delegating, omit kind to use the configured default agent (${defaultAgent}); specify a backend only when the user requests one or there is a concrete reason to override the default.`,
 				"Delegate genuinely parallel or sidecar work. Keep work that directly blocks your next step local unless delegation provides clear leverage.",
 				"Reuse an existing agent with send_input when follow-up work depends on its context instead of spawning a replacement.",
 				"For independent work, spawn agents without serially waiting between launches, then use wait_agent with multiple targets. Avoid reflexive polling; continue other useful work when possible.",
 			],
 			parameters: {
 				type: "object",
-				required: ["kind", "message"],
+				required: ["message"],
 				properties: {
-					kind: { type: "string", enum: kinds, description: "Agent kind discovered from this installed Herdr binary" },
+					kind: { type: "string", enum: kinds, description: `Optional agent kind override; defaults to ${defaultAgent}` },
 					message: { type: "string", minLength: 1, description: "Complete initial task for the new agent" },
 					name: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,31}$", description: "Optional stable name; generated when omitted" },
 					cwd: { type: "string", description: "Working directory; defaults to pi-as-mcp cwd" },
@@ -349,7 +357,7 @@ export function createAgentToolDefinitions(
 				additionalProperties: false,
 			} as any,
 			execute: async (_toolCallId, raw: SpawnAgentInput) => {
-				const kind = requireNonEmpty(raw.kind, "kind");
+				const kind = raw.kind === undefined ? defaultAgent : requireNonEmpty(raw.kind, "kind");
 				const message = requireNonEmpty(raw.message, "message");
 				const [freshCatalog, existingAgents] = await Promise.all([runtime.agentCatalog(true), listAgentInfos(runtime)]);
 				const available = installedKinds(freshCatalog);

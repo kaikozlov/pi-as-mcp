@@ -161,6 +161,7 @@ Usage: pi-mcp [--cwd <dir>] [--tools <list>]
     --bash-max-sync-seconds <n>
                             Synchronous bash handoff window
     --max-agents <n>       Optional retained-agent workspace limit; 0 disables it
+    --default-agent <kind> Default backend when spawn_agent omits kind
     --herdr-session <name> Enable persistent agents with a dedicated named Herdr session
     --herdr-bin <path>     Herdr executable (default: herdr on PATH)
     --transport <kind>     stdio or http
@@ -180,6 +181,7 @@ PI_MCP_CWD="$HOME/dev"
 PI_MCP_TOOLS="read,write,edit,bash,agent"
 PI_MCP_BASH_MAX_SYNC_SECONDS="20"
 PI_MCP_MAX_AGENTS="0" # optional; 0 = unlimited
+# PI_MCP_DEFAULT_AGENT="pi" # optional override; omp is preferred automatically when installed
 PI_MCP_HERDR_SESSION="pi-as-mcp"
 # PI_MCP_HERDR_BIN="/opt/homebrew/bin/herdr"
 # PI_MCP_TRANSPORT="http"
@@ -207,8 +209,8 @@ The ChatGPT tunnel setup stores these values plus `CONTROL_PLANE_TUNNEL_ID` and 
 
 The `agent` configuration selector expands to a model-facing subagent interface:
 
-- `list_agents` — return a compact roster plus the agent kinds discovered from the installed Herdr binary
-- `spawn_agent` — create a dedicated workspace, launch a chosen kind, and submit the first task in one call; names are generated when omitted, and the call returns after submission rather than waiting for task completion
+- `list_agents` — return a compact roster, the installed agent kinds, and the effective default agent
+- `spawn_agent` — create a dedicated workspace and submit the first task in one call; `kind` is optional and uses the configured/default backend, names are generated when omitted, and the call returns after submission rather than waiting for task completion
 - `send_input` — reuse an existing agent for context-dependent follow-up work
 - `wait_agent` — wait on one or many agents (`mode=any` or `mode=all`) without serial polling
 - `read_agent` — inspect deeper terminal output when the bounded tails already returned by spawn/send/wait are insufficient
@@ -216,7 +218,7 @@ The `agent` configuration selector expands to a model-facing subagent interface:
 - `interrupt_agent` — send `ctrl+c` and observe the next settled lifecycle state
 - `close_agent` — capture a final terminal tail and remove the workspace; working agents require `force=true`
 
-The catalog is derived locally from the installed Herdr binary: `herdr agent start --help` supplies the supported kind names and `herdr integration status` supplies lifecycle-integration state. Only kinds whose Herdr integration is actually installed (`current` or `outdated`) are exposed to the model and accepted by `spawn_agent`; unsupported/unintegrated kinds stay hidden. Spawn rechecks that state before launching. Neither path reads or assumes the presence of the untracked `REFERENCE/` directory.
+The catalog is derived locally from the installed Herdr binary: `herdr agent start --help` supplies the supported kind names and `herdr integration status` supplies lifecycle-integration state. Only kinds whose Herdr integration is actually installed (`current` or `outdated`) are exposed to the model and accepted by `spawn_agent`; unsupported/unintegrated kinds stay hidden. `spawn_agent` defaults to `PI_MCP_DEFAULT_AGENT` when configured; otherwise it prefers `omp` when installed and falls back to the first installed integration. An explicit configured default must be installed. Spawn rechecks integration state before launching. Neither path reads or assumes the presence of the untracked `REFERENCE/` directory.
 
 `send_input` and `wait_agent` use Herdr's atomic lifecycle wait and remain capped at 15 seconds for tunnel safety. A timeout is returned as state, not failure: the agent remains running, the response includes a bounded output tail and a retry hint, and later `wait_agent`/`send_input` calls can continue the same session. `agent_prompt_stalled` is also returned as accepted-but-unsettled state so callers do not accidentally resubmit an already-delivered prompt. Blocked states include Herdr detection output when available.
 

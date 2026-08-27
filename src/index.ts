@@ -34,6 +34,7 @@ interface Options {
 	tools: ToolSelector[];
 	bashMaxSyncSeconds?: number;
 	maxAgents: number;
+	defaultAgent?: string;
 	herdrSession?: string;
 	herdrBin?: string;
 	transport: TransportKind;
@@ -107,6 +108,8 @@ function printHelp(): void {
 	out.write("                           Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or native unlimited bash.\n");
 	out.write("      --max-agents <n>      Optional retained-agent workspace limit; 0 disables it.\n");
 	out.write("                           Default: $PI_MCP_MAX_AGENTS or 0.\n");
+	out.write("      --default-agent <k>   Default Herdr agent kind when spawn_agent omits kind.\n");
+	out.write("                           Default: $PI_MCP_DEFAULT_AGENT, or omp when installed.\n");
 	out.write("      --herdr-session <n>  Enable agent with a dedicated named Herdr session.\n");
 	out.write("                           Default: $PI_MCP_HERDR_SESSION; unset disables Herdr.\n");
 	out.write("      --herdr-bin <path>   Herdr executable. Default: $PI_MCP_HERDR_BIN, or herdr on PATH.\n");
@@ -189,6 +192,7 @@ function parseArgs(argv: readonly string[]): Options {
 	const envTools = process.env.PI_MCP_TOOLS?.trim();
 	const envBashMaxSync = process.env.PI_MCP_BASH_MAX_SYNC_SECONDS?.trim();
 	const envMaxAgents = process.env.PI_MCP_MAX_AGENTS?.trim();
+	const envDefaultAgent = process.env.PI_MCP_DEFAULT_AGENT?.trim();
 	const envHerdrSession = process.env.PI_MCP_HERDR_SESSION?.trim();
 	const envHerdrBin = process.env.PI_MCP_HERDR_BIN?.trim();
 	let toolsExplicit = !!envTools;
@@ -197,6 +201,7 @@ function parseArgs(argv: readonly string[]): Options {
 		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : envHerdrSession ? [...PI_TOOL_NAMES, "agent"] : [...PI_TOOL_NAMES],
 		bashMaxSyncSeconds: envBashMaxSync ? parsePositiveSeconds(envBashMaxSync, "$PI_MCP_BASH_MAX_SYNC_SECONDS") : undefined,
 		maxAgents: parseNonNegativeInteger(envMaxAgents, "$PI_MCP_MAX_AGENTS"),
+		defaultAgent: envDefaultAgent || undefined,
 		herdrSession: envHerdrSession || undefined,
 		herdrBin: envHerdrBin || undefined,
 		transport: parseTransport(process.env.PI_MCP_TRANSPORT, "$PI_MCP_TRANSPORT"),
@@ -218,6 +223,7 @@ function parseArgs(argv: readonly string[]): Options {
 			case "-T": case "--tools": { const value = next(); if (!value) throw new Error(`${arg} requires a comma-separated tool list`); opts.tools = parseToolList(value, arg); toolsExplicit = true; break; }
 			case "--bash-max-sync-seconds": { const value = next(); if (!value) throw new Error(`${arg} requires a positive number of seconds`); opts.bashMaxSyncSeconds = parsePositiveSeconds(value, arg); break; }
 			case "--max-agents": { const value = next(); if (value === undefined) throw new Error(`${arg} requires a non-negative integer`); opts.maxAgents = parseNonNegativeInteger(value, arg); break; }
+			case "--default-agent": { const value = next()?.trim(); if (!value) throw new Error(`${arg} requires an agent kind`); opts.defaultAgent = value; break; }
 			case "--herdr-session": { const value = next()?.trim(); if (!value) throw new Error(`${arg} requires a named Herdr session`); opts.herdrSession = value; break; }
 			case "--herdr-bin": { const value = next()?.trim(); if (!value) throw new Error(`${arg} requires an executable path`); opts.herdrBin = value; break; }
 			case "--transport": { const value = next(); if (!value) throw new Error("--transport requires stdio or http"); opts.transport = parseTransport(value, "--transport"); break; }
@@ -275,7 +281,18 @@ async function createHerdrRuntime(opts: Options): Promise<HerdrRuntime | undefin
 	try {
 		await herdr.ensureReady();
 		const catalog = await herdr.agentCatalog();
-		logLifecycle("herdr_ready", { session: herdr.session, agent_kinds: catalog.length });
+		if (opts.defaultAgent) {
+			const installed = catalog.some((entry) =>
+				entry.kind === opts.defaultAgent && (entry.integration === "current" || entry.integration === "outdated")
+			);
+			if (!installed) {
+				const available = catalog
+					.filter((entry) => entry.integration === "current" || entry.integration === "outdated")
+					.map((entry) => entry.kind);
+				throw new Error(`Configured default agent '${opts.defaultAgent}' is not installed. Available: ${available.join(", ") || "none"}`);
+			}
+		}
+		logLifecycle("herdr_ready", { session: herdr.session, agent_kinds: catalog.length, ...(opts.defaultAgent ? { default_agent: opts.defaultAgent } : {}) });
 		return herdr;
 	} catch (error) {
 		logLifecycle("herdr_unavailable", {
@@ -290,7 +307,7 @@ function createPiMcpServer(opts: Options, herdr: HerdrRuntime | undefined): Serv
 	const enabledSelectors = herdr
 		? opts.tools
 		: opts.tools.filter((tool) => PI_TOOL_NAMES.includes(tool as (typeof PI_TOOL_NAMES)[number]));
-	const tools = createTools(opts.cwd, enabledSelectors, { bashMaxSyncSeconds: opts.bashMaxSyncSeconds, herdr, maxAgents: opts.maxAgents });
+	const tools = createTools(opts.cwd, enabledSelectors, { bashMaxSyncSeconds: opts.bashMaxSyncSeconds, herdr, maxAgents: opts.maxAgents, defaultAgent: opts.defaultAgent });
 	const byName = new Map<string, McpTool>(tools.map((tool) => [tool.name, tool]));
 	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
 	const validatorProvider = new AjvJsonSchemaValidator();
