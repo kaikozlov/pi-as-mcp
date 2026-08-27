@@ -2,9 +2,8 @@
  * Tool factory for pi-as-mcp.
  *
  * The four core coding tools remain pi's own implementations. When a dedicated
- * Herdr runtime is configured, one additional `agent` tool exposes persistent
- * interactive coding-agent orchestration without moving the agent loop into
- * pi-as-mcp itself.
+ * Herdr runtime is configured, the `agent` selector expands to a small set of
+ * model-facing subagent tools while Herdr continues to own process/lifecycle state.
  */
 import {
 	createBashToolDefinition,
@@ -14,37 +13,44 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import { createAgentToolDefinition } from "./agent-tool.js";
+import { AGENT_TOOL_NAMES, createAgentToolDefinitions, type AgentToolName } from "./agent-tool.js";
 import { HerdrRuntime } from "./herdr.js";
 import { createManagedBashToolDefinition } from "./managed-bash.js";
 
 export const PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
-export const ALL_TOOL_NAMES = [...PI_TOOL_NAMES, "agent"] as const;
-export type ToolName = (typeof ALL_TOOL_NAMES)[number];
+export const TOOL_SELECTORS = [...PI_TOOL_NAMES, "agent", ...AGENT_TOOL_NAMES] as const;
+export type ToolSelector = (typeof TOOL_SELECTORS)[number];
+export type ExposedToolName = (typeof PI_TOOL_NAMES)[number] | AgentToolName;
 
 /** A tool definition keyed by its MCP name. */
 export interface McpTool {
-	name: ToolName;
+	name: ExposedToolName;
 	definition: ToolDefinition<any, any>;
 }
 
 export interface CreateToolsOptions {
 	/** Optional synchronous ceiling before long bash work is handed off. */
 	bashMaxSyncSeconds?: number;
-	/** Dedicated Herdr runtime. Required only when the `agent` tool is enabled. */
+	/** Dedicated Herdr runtime. Required when any agent selector is enabled. */
 	herdr?: HerdrRuntime;
+	/** Maximum retained agent workspaces; 0 disables the limit. */
+	maxAgents?: number;
+}
+
+function wantsAnyAgentTool(names: readonly ToolSelector[]): boolean {
+	return names.includes("agent") || AGENT_TOOL_NAMES.some((name) => names.includes(name));
 }
 
 /** Build the requested tool definitions bound to `cwd`. */
 export function createTools(
 	cwd: string,
-	names: readonly ToolName[],
+	names: readonly ToolSelector[],
 	options: CreateToolsOptions = {},
 ): McpTool[] {
 	const wanted = new Set<string>(names);
 	const tools: McpTool[] = [];
 
-	for (const name of ALL_TOOL_NAMES) {
+	for (const name of PI_TOOL_NAMES) {
 		if (!wanted.has(name)) continue;
 		switch (name) {
 			case "read":
@@ -64,11 +70,14 @@ export function createTools(
 				tools.push({ name, definition });
 				break;
 			}
-			case "agent": {
-				if (!options.herdr) throw new Error("agent tool requires a configured Herdr runtime");
-				tools.push({ name, definition: createAgentToolDefinition(options.herdr, cwd) });
-				break;
-			}
+		}
+	}
+
+	if (wantsAnyAgentTool(names)) {
+		if (!options.herdr) throw new Error("agent tools require a configured Herdr runtime");
+		const allAgentTools = createAgentToolDefinitions(options.herdr, cwd, { maxAgents: options.maxAgents });
+		for (const tool of allAgentTools) {
+			if (wanted.has("agent") || wanted.has(tool.name)) tools.push(tool);
 		}
 	}
 
@@ -76,30 +85,12 @@ export function createTools(
 }
 
 /** Advisory MCP hints for client confirmation/UI behavior. */
-export const MCP_ANNOTATIONS: Record<ToolName, ToolAnnotations> = {
-	read: {
-		readOnlyHint: true,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	write: {
-		readOnlyHint: true,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	edit: {
-		readOnlyHint: true,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	bash: {
-		readOnlyHint: true,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
-	agent: {
-		readOnlyHint: true,
-		idempotentHint: true,
-		openWorldHint: false,
-	},
+const COMPAT_ANNOTATIONS: ToolAnnotations = {
+	readOnlyHint: true,
+	idempotentHint: true,
+	openWorldHint: false,
 };
+
+export const MCP_ANNOTATIONS: Record<ExposedToolName, ToolAnnotations> = Object.fromEntries(
+	[...PI_TOOL_NAMES, ...AGENT_TOOL_NAMES].map((name) => [name, COMPAT_ANNOTATIONS]),
+) as Record<ExposedToolName, ToolAnnotations>;

@@ -149,13 +149,27 @@ async function main() {
 			assert(text(result.content)?.includes("hello mars"), `output: ${text(result.content)}`);
 		});
 
+		await step("Herdr failure degrades only subagent tools", async () => {
+			const degraded = await connect(["--cwd", cwd], {
+				...cleanEnv(),
+				PI_MCP_TOOLS: "read,agent",
+				PI_MCP_HERDR_SESSION: "pi-as-mcp-test",
+				PI_MCP_HERDR_BIN: "/bin/false",
+			});
+			clients.push(degraded);
+			const { tools } = await degraded.listTools();
+			assert(JSON.stringify(tools.map((tool) => tool.name)) === JSON.stringify(["read"]), `got ${tools.map((tool) => tool.name)}`);
+			const result = await degraded.callTool({ name: "read", arguments: { path: "greet.txt" } });
+			assert(text(result.content)?.includes("hello mars"), `degraded read output: ${text(result.content)}`);
+		});
+
 		await step("agent cannot be enabled without a dedicated Herdr session", async () => {
 			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--tools", "agent"], {
 				encoding: "utf8",
 				env: cleanEnv(),
 			});
 			assert(result.status !== 0, "agent without Herdr unexpectedly succeeded");
-			assert(/requires --herdr-session/i.test(result.stderr), `stderr=${result.stderr}`);
+			assert(/require(?:s)? --herdr-session/i.test(result.stderr), `stderr=${result.stderr}`);
 		});
 
 		await step("default Herdr session is rejected", async () => {

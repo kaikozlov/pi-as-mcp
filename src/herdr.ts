@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { discoverAgentCatalog, type AgentCatalogEntry } from "./agent-catalog.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
@@ -28,13 +29,26 @@ export class HerdrCommandError extends Error {
 	readonly stderr: string;
 	readonly stdout: string;
 	readonly code: string | number | null | undefined;
+	readonly herdrCode: string | undefined;
+	readonly herdrMessage: string | undefined;
 
-	constructor(message: string, options: { stderr?: string; stdout?: string; code?: string | number | null }) {
+	constructor(
+		message: string,
+		options: {
+			stderr?: string;
+			stdout?: string;
+			code?: string | number | null;
+			herdrCode?: string;
+			herdrMessage?: string;
+		},
+	) {
 		super(message);
 		this.name = "HerdrCommandError";
 		this.stderr = options.stderr ?? "";
 		this.stdout = options.stdout ?? "";
 		this.code = options.code;
+		this.herdrCode = options.herdrCode;
+		this.herdrMessage = options.herdrMessage;
 	}
 }
 
@@ -72,6 +86,28 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface HerdrErrorEnvelope {
+	code?: string;
+	message?: string;
+}
+
+function parseHerdrErrorEnvelope(text: string): HerdrErrorEnvelope | undefined {
+	const candidates = [text.trim(), ...text.split(/\r?\n/).map((line) => line.trim()).reverse()].filter(Boolean);
+	for (const candidate of candidates) {
+		try {
+			const parsed = JSON.parse(candidate) as { error?: unknown };
+			if (!parsed.error || typeof parsed.error !== "object") continue;
+			const record = parsed.error as Record<string, unknown>;
+			const code = typeof record.code === "string" ? record.code : undefined;
+			const message = typeof record.message === "string" ? record.message : undefined;
+			if (code || message) return { code, message };
+		} catch {
+			// Herdr may mix human diagnostics with a final JSON error line.
+		}
+	}
+	return undefined;
+}
+
 function errorDetail(error: unknown): HerdrCommandError {
 	const value = error as NodeJS.ErrnoException & {
 		stdout?: string | Buffer;
@@ -80,11 +116,19 @@ function errorDetail(error: unknown): HerdrCommandError {
 	};
 	const stdout = value.stdout?.toString() ?? "";
 	const stderr = value.stderr?.toString() ?? "";
-	const detail = stderr.trim() || stdout.trim() || value.message || String(error);
-	return new HerdrCommandError(detail, { stdout, stderr, code: value.code });
+	const envelope = parseHerdrErrorEnvelope(stderr) ?? parseHerdrErrorEnvelope(stdout);
+	const detail = envelope?.message ?? (stderr.trim() || stdout.trim() || value.message || String(error));
+	return new HerdrCommandError(detail, {
+		stdout,
+		stderr,
+		code: value.code,
+		herdrCode: envelope?.code,
+		herdrMessage: envelope?.message,
+	});
 }
 
 function serverNotRunning(error: HerdrCommandError): boolean {
+	if (error.herdrCode === "server_not_running") return true;
 	const combined = `${error.stderr}\n${error.stdout}\n${error.message}`.toLowerCase();
 	return combined.includes("server_not_running") || combined.includes("server is not running");
 }
@@ -102,6 +146,8 @@ export class HerdrRuntime {
 	readonly binary: string;
 	readonly startupTimeoutMs: number;
 	private readyPromise: Promise<void> | undefined;
+	private agentCatalogPromise: Promise<AgentCatalogEntry[]> | undefined;
+	private agentCatalogCache: AgentCatalogEntry[] | undefined;
 
 	constructor(options: HerdrRuntimeOptions) {
 		validateSessionName(options.session);
@@ -134,6 +180,33 @@ export class HerdrRuntime {
 
 	async runText(args: readonly string[], timeoutMs = 20_000): Promise<string> {
 		return (await this.run(args, timeoutMs)).trimEnd();
+	}
+
+	/** Run a Herdr command that is not scoped to the managed session (help/status discovery only). */
+	async runGlobalText(args: readonly string[], timeoutMs = 20_000): Promise<string> {
+		return (await this.execUnscoped(args, timeoutMs)).trimEnd();
+	}
+
+	async agentCatalog(refresh = false): Promise<AgentCatalogEntry[]> {
+		if (refresh || !this.agentCatalogPromise) {
+			this.agentCatalogPromise = discoverAgentCatalog(this)
+				.then((catalog) => {
+					this.agentCatalogCache = catalog;
+					return catalog;
+				})
+				.catch((error) => {
+					this.agentCatalogPromise = undefined;
+					throw error;
+				});
+		}
+		return this.agentCatalogPromise;
+	}
+
+	getCachedAgentCatalog(): readonly AgentCatalogEntry[] {
+		if (!this.agentCatalogCache) {
+			throw new Error("Herdr agent catalog has not been initialized");
+		}
+		return this.agentCatalogCache;
 	}
 
 	private async run(args: readonly string[], timeoutMs: number): Promise<string> {
