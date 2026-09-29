@@ -268,7 +268,7 @@ type PiExecute = (
 	signal: AbortSignal | undefined,
 	onUpdate: undefined,
 	ctx: undefined,
-) => Promise<{ content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }> }>;
+) => Promise<{ content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }>;
 
 function cleanSchema(tool: McpTool): Record<string, unknown> {
 	return JSON.parse(JSON.stringify(tool.definition.parameters)) as Record<string, unknown>;
@@ -345,7 +345,7 @@ function createPiMcpServer(opts: Options, herdr: HerdrRuntime | undefined): Serv
 			const validation = validate(rawParams);
 			if (!validation.valid) return { content: [{ type: "text" as const, text: `Invalid arguments for ${name}: ${validation.errorMessage}` }], isError: true };
 			const result = await (tool.definition.execute as unknown as PiExecute)(requestId, validation.data, extra.signal, undefined, undefined);
-			return { content: toMcpContent(result.content) };
+			return { content: toMcpContent(result.content), isError: result.isError };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return { content: [{ type: "text" as const, text: message }], isError: true };

@@ -50,7 +50,7 @@ The adapter is intentionally thin:
 - MCP cancellation is passed into pi's tool execution; for `bash`, pi terminates the spawned process tree.
 - When configured, the persistent subagent tools target only pi-as-mcp's explicit named Herdr session; inherited Herdr pane/session/socket context is stripped.
 - Supported agent kinds are discovered from the installed Herdr binary at startup; `REFERENCE/` is never required at runtime or by tests.
-- Tool errors are returned as MCP tool errors rather than crashing the server.
+- Tool errors, whether thrown or returned by pi with `isError: true`, are returned as MCP tool errors rather than crashing the server.
 - MCP annotations are compatibility metadata for clients. The current profile intentionally advertises every exposed tool as read-only, idempotent, and closed-world because ChatGPT mobile otherwise refuses to expose the connector; these hints are advisory and do not restrict actual write/edit/bash/subagent behavior.
 
 There is no tool reimplementation.
