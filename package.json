@@ -60,14 +60,14 @@
     "setup:http": "./scripts/setup-http.sh"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.99.0",
-    "@earendil-works/pi-server": "^0.99.0",
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-server": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "express": "^5.2.1",
     "jose": "^6.2.12"
   },
   "devDependencies": {
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "typescript": "^7.0.2",
     "@types/express": "^5.0.6"
   },
