@@ -60,9 +60,9 @@
     "setup:http": "./scripts/setup-http.sh"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@earendil-works/pi-server": "^1.0.0",
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-server": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "express": "^5.2.1",
     "jose": "^6.2.12"
   },
