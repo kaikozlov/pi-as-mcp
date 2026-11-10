@@ -16,11 +16,11 @@ async function main() {
 	const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_MCP_")));
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: ["dist/index.js", "--cwd", cwd],
+		args: ["src/index.ts", "--cwd", cwd],
 		env: baseEnv,
 		stderr: "inherit",
 	});
-	const client = new Client({ name: "cancel-smoke", version: "0.0.0" });
+	const client = new Client({ name: "test-cancel", version: "0.0.0" });
 
 	try {
 		await client.connect(transport);

@@ -1,193 +1,122 @@
 #!/usr/bin/env bash
-# One-command local bootstrap for pi-as-mcp + OpenAI Secure MCP Tunnel.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MIN_NODE_MAJOR=22
-MIN_NODE_MINOR=19
+ENV_FILE="./server/.env"
 
 usage() {
-	cat <<'EOF'
-Usage: ./scripts/setup.sh [--non-interactive] [--refresh-tunnel-client]
+	cat <<'USAGE'
+Usage: ./scripts/setup.sh [--non-interactive]
 
-Installs dependencies with bun, builds pi-as-mcp, installs the pinned OpenAI
-`tunnel-client`, and creates/updates the local tunnel configuration.
+Install dependencies and configure the Cloudflare-backed HTTP deployment.
 
 Options:
-  --non-interactive       Never prompt. Existing tunnel/.env is preserved;
-                          if it is missing, create it from .env.example.
-  --refresh-tunnel-client Reinstall the pinned tunnel-client build.
-  -h, --help              Show this help.
-EOF
+  --non-interactive  Do not prompt; create server/.env from the template if absent
+  -h, --help         Show this help
+USAGE
 }
 
 INTERACTIVE=true
-REFRESH_TUNNEL=false
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--non-interactive) INTERACTIVE=false ;;
-		--refresh-tunnel-client) REFRESH_TUNNEL=true ;;
 		-h|--help) usage; exit 0 ;;
 		*) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
 	esac
 	shift
 done
+[ -t 0 ] || INTERACTIVE=false
 
-if [ ! -t 0 ]; then
-	INTERACTIVE=false
-fi
-
-if ! command -v node >/dev/null 2>&1; then
-	echo "Node.js >= ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} is required." >&2
+command -v bun >/dev/null 2>&1 || {
+	echo "Bun is required." >&2
 	exit 1
-fi
-if ! node -e '
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
-'; then
-	echo "Node.js >= ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} is required; found $(node --version)." >&2
+}
+command -v cloudflared >/dev/null 2>&1 || {
+	echo "cloudflared is required for the deployed service." >&2
 	exit 1
-fi
-
-if ! command -v bun >/dev/null 2>&1; then
-	echo "Bun is required to install dependencies and run scripts. Install it from https://bun.com" >&2
-	exit 1
-fi
+}
 
 printf '\n==> Installing dependencies\n'
 bun install
 
-printf '\n==> Building pi-as-mcp\n'
-bun run build
-
-if [ "$REFRESH_TUNNEL" = true ] || [ ! -x bin/tunnel-client ]; then
-	printf '\n==> Installing OpenAI tunnel-client\n'
-	./scripts/tunnel-install.sh
-else
-	printf '\n==> OpenAI tunnel-client already installed: '
-	./bin/tunnel-client --version
+mkdir -p server logs
+if [ ! -f "$ENV_FILE" ]; then
+	install -m 600 server/.env.example "$ENV_FILE"
 fi
-
-mkdir -p tunnel
-
-is_placeholder() {
-	case "${1:-}" in
-		""|tunnel_paste_your_tunnel_id_here|sk_paste_your_runtime_key_here) return 0 ;;
-		*) return 1 ;;
-	esac
-}
-
-shell_quote() {
-	# Emit a value safe to source from the bash dotenv file.
-	local escaped=${1//\'/\'\\\'\'}
-	printf "'%s'" "$escaped"
-}
-
-if [ -d "${HOME}/dev" ]; then
-	PI_MCP_CWD_VALUE="${HOME}/dev"
-else
-	PI_MCP_CWD_VALUE="$(pwd)/sandbox"
-fi
-PI_MCP_TOOLS_VALUE=""
-PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE="20"
-PI_MCP_HERDR_SESSION_VALUE=""
-CONTROL_PLANE_TUNNEL_ID_VALUE=""
-CONTROL_PLANE_API_KEY_VALUE=""
-
-if [ -f tunnel/.env ]; then
-	chmod 600 tunnel/.env
-	set -a
-	# shellcheck disable=SC1091
-	. ./tunnel/.env
-	set +a
-	PI_MCP_CWD_VALUE="${PI_MCP_CWD:-$PI_MCP_CWD_VALUE}"
-	PI_MCP_TOOLS_VALUE="${PI_MCP_TOOLS:-}"
-	PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE="${PI_MCP_BASH_MAX_SYNC_SECONDS:-$PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE}"
-	PI_MCP_HERDR_SESSION_VALUE="${PI_MCP_HERDR_SESSION:-}"
-	CONTROL_PLANE_TUNNEL_ID_VALUE="${CONTROL_PLANE_TUNNEL_ID:-}"
-	CONTROL_PLANE_API_KEY_VALUE="${CONTROL_PLANE_API_KEY:-}"
-fi
+chmod 600 "$ENV_FILE"
 
 if [ "$INTERACTIVE" = true ]; then
-	printf '\n==> Local configuration\n'
-	if [ -z "$PI_MCP_HERDR_SESSION_VALUE" ] && command -v herdr >/dev/null 2>&1; then
-		PI_MCP_HERDR_SESSION_VALUE="pi-as-mcp"
-	fi
-	printf 'Workspace root [%s]: ' "$PI_MCP_CWD_VALUE"
+	set -a
+	# shellcheck disable=SC1091
+	. "$ENV_FILE"
+	set +a
+
+	DEFAULT_CWD="${PI_MCP_CWD:-${HOME}/dev}"
+	DEFAULT_HOSTS="${PI_MCP_HTTP_ALLOWED_HOSTS:-}"
+	DEFAULT_TEAM="${CF_ACCESS_TEAM_DOMAIN:-}"
+	DEFAULT_AUD="${CF_ACCESS_AUD:-}"
+
+	printf '\n==> Configuration\n'
+	printf 'Workspace root [%s]: ' "$DEFAULT_CWD"
 	IFS= read -r input
-	if [ -n "$input" ]; then PI_MCP_CWD_VALUE="$input"; fi
-	if [ ! -d "$PI_MCP_CWD_VALUE" ]; then
-		echo "Workspace root does not exist: $PI_MCP_CWD_VALUE" >&2
+	WORKSPACE="${input:-$DEFAULT_CWD}"
+	[ -d "$WORKSPACE" ] || {
+		echo "Workspace root does not exist: $WORKSPACE" >&2
 		exit 1
-	fi
+	}
 
-	if is_placeholder "$CONTROL_PLANE_TUNNEL_ID_VALUE"; then
-		printf 'OpenAI tunnel ID: '
-		IFS= read -r CONTROL_PLANE_TUNNEL_ID_VALUE
-	else
-		printf 'OpenAI tunnel ID [configured; Enter to keep]: '
-		IFS= read -r input
-		if [ -n "$input" ]; then CONTROL_PLANE_TUNNEL_ID_VALUE="$input"; fi
-	fi
+	printf 'Public MCP hostname [%s]: ' "${DEFAULT_HOSTS:-mcp.example.com}"
+	IFS= read -r input
+	HOSTS="${input:-${DEFAULT_HOSTS:-mcp.example.com}}"
 
-	if is_placeholder "$CONTROL_PLANE_API_KEY_VALUE"; then
-		printf 'OpenAI runtime API key: '
-		IFS= read -r -s CONTROL_PLANE_API_KEY_VALUE
-		printf '\n'
-	else
-		printf 'OpenAI runtime API key [configured; Enter to keep]: '
-		IFS= read -r -s input
-		printf '\n'
-		if [ -n "$input" ]; then CONTROL_PLANE_API_KEY_VALUE="$input"; fi
-	fi
+	printf 'Cloudflare Access team domain [%s]: ' "${DEFAULT_TEAM:-https://your-team.cloudflareaccess.com}"
+	IFS= read -r input
+	TEAM="${input:-${DEFAULT_TEAM:-https://your-team.cloudflareaccess.com}}"
+
+	printf 'Cloudflare Access audience tag [%s]: ' "${DEFAULT_AUD:+configured; Enter to keep}"
+	IFS= read -r input
+	AUD="${input:-$DEFAULT_AUD}"
+
+	shell_quote() {
+		local escaped=${1//\'/\'\\\'\'}
+		printf "'%s'" "$escaped"
+	}
 
 	{
 		cat <<'EOF'
-# Local pi-as-mcp / OpenAI Secure MCP Tunnel configuration.
+# Local pi-as-mcp deployment configuration.
 # Generated by `bun run setup`. This file is gitignored and must remain private.
-
 EOF
-		printf 'PI_MCP_CWD=%s\n' "$(shell_quote "$PI_MCP_CWD_VALUE")"
-		if [ -n "$PI_MCP_TOOLS_VALUE" ]; then
-			printf 'PI_MCP_TOOLS=%s\n' "$(shell_quote "$PI_MCP_TOOLS_VALUE")"
-		fi
-		printf 'PI_MCP_BASH_MAX_SYNC_SECONDS=%s\n' "$(shell_quote "$PI_MCP_BASH_MAX_SYNC_SECONDS_VALUE")"
-		if [ -n "$PI_MCP_HERDR_SESSION_VALUE" ]; then
-			printf 'PI_MCP_HERDR_SESSION=%s\n' "$(shell_quote "$PI_MCP_HERDR_SESSION_VALUE")"
-		fi
-		printf 'CONTROL_PLANE_TUNNEL_ID=%s\n' "$(shell_quote "$CONTROL_PLANE_TUNNEL_ID_VALUE")"
-		printf 'CONTROL_PLANE_API_KEY=%s\n' "$(shell_quote "$CONTROL_PLANE_API_KEY_VALUE")"
-	} > tunnel/.env
-	chmod 600 tunnel/.env
-elif [ ! -f tunnel/.env ]; then
-	install -m 600 tunnel/.env.example tunnel/.env
-	printf '\nCreated tunnel/.env from the template. Fill in the tunnel ID and runtime key before starting.\n'
+		printf 'PI_MCP_CWD=%s\n' "$(shell_quote "$WORKSPACE")"
+		printf 'PI_MCP_TOOLS=%s\n' "$(shell_quote "${PI_MCP_TOOLS:-read,write,edit,bash,agent}")"
+		printf 'PI_MCP_BASH_MAX_SYNC_SECONDS=%s\n' "$(shell_quote "${PI_MCP_BASH_MAX_SYNC_SECONDS:-20}")"
+		[ -z "${PI_MCP_MAX_AGENTS:-}" ] || printf 'PI_MCP_MAX_AGENTS=%s\n' "$(shell_quote "$PI_MCP_MAX_AGENTS")"
+		[ -z "${PI_MCP_DEFAULT_AGENT:-}" ] || printf 'PI_MCP_DEFAULT_AGENT=%s\n' "$(shell_quote "$PI_MCP_DEFAULT_AGENT")"
+		printf 'PI_MCP_HERDR_SESSION=%s\n' "$(shell_quote "${PI_MCP_HERDR_SESSION:-pi-as-mcp}")"
+		printf 'PI_MCP_TRANSPORT=%s\n' "$(shell_quote "http")"
+		printf 'PI_MCP_HTTP_HOST=%s\n' "$(shell_quote "${PI_MCP_HTTP_HOST:-127.0.0.1}")"
+		printf 'PI_MCP_HTTP_PORT=%s\n' "$(shell_quote "${PI_MCP_HTTP_PORT:-3333}")"
+		printf 'PI_MCP_HTTP_PATH=%s\n' "$(shell_quote "${PI_MCP_HTTP_PATH:-/mcp}")"
+		printf 'PI_MCP_HTTP_ALLOWED_HOSTS=%s\n' "$(shell_quote "$HOSTS")"
+		printf 'PI_MCP_AUTH=%s\n' "$(shell_quote "cloudflare-access")"
+		printf 'PI_MCP_LOG_FILE=%s\n' "$(shell_quote "$(pwd)/logs/http-lifecycle.jsonl")"
+		printf 'CF_ACCESS_TEAM_DOMAIN=%s\n' "$(shell_quote "$TEAM")"
+		printf 'CF_ACCESS_AUD=%s\n' "$(shell_quote "$AUD")"
+	} > "$ENV_FILE"
+	chmod 600 "$ENV_FILE"
 fi
 
-if [ -f tunnel/.env ]; then
-	chmod 600 tunnel/.env
-fi
+cat <<'DONE'
 
-printf '\n==> Setup complete\n'
-if is_placeholder "$CONTROL_PLANE_TUNNEL_ID_VALUE" || is_placeholder "$CONTROL_PLANE_API_KEY_VALUE"; then
-	cat <<'EOF'
-Edit tunnel/.env, then validate and start with:
+==> Setup complete
 
-  bun run tunnel:doctor
-  bun run tunnel
-EOF
-else
-	cat <<'EOF'
-Validate and start with:
+Start:
+  bun run start
 
-  bun run tunnel:doctor
-  bun run tunnel
+Inspect:
+  bun run status
+  bun run logs
 
-Once running:
-
-  bun run tunnel:status
-  bun run tunnel:attach
-  bun run tunnel:session
-  bun run tunnel:ui
-EOF
-fi
+Restart after configuration or code changes:
+  bun run restart
+DONE

@@ -57,8 +57,8 @@ async function main() {
 	const jwksPort = await freePort();
 	const mcpPort = await freePort();
 	const issuer = `http://127.0.0.1:${jwksPort}`;
-	const audience = "pi-as-mcp-auth-smoke";
-	const kid = "auth-smoke-key";
+	const audience = "pi-as-mcp-auth-test";
+	const kid = "auth-test-key";
 	const { publicKey, privateKey } = await generateKeyPair("RS256");
 	const jwk = await exportJWK(publicKey);
 	jwk.kid = kid;
@@ -79,7 +79,7 @@ async function main() {
 	});
 
 	const child = spawn(process.execPath, [
-		"dist/index.js",
+		"src/index.ts",
 		"--transport", "http",
 		"--auth", "cloudflare-access",
 		"--host", "127.0.0.1",
@@ -122,7 +122,7 @@ async function main() {
 				headers: { "Cf-Access-Jwt-Assertion": token },
 			},
 		});
-		const client = new Client({ name: "http-auth-smoke", version: "0.0.0" });
+		const client = new Client({ name: "test-http-auth", version: "0.0.0" });
 		try {
 			await client.connect(transport);
 			const listed = await client.listTools();

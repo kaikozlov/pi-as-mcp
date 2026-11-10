@@ -53,7 +53,7 @@ async function main() {
 	const port = await freePort();
 	const base = `http://127.0.0.1:${port}`;
 	const child = spawn(process.execPath, [
-		"dist/index.js",
+		"src/index.ts",
 		"--transport", "http",
 		"--auth", "none",
 		"--host", "127.0.0.1",
@@ -63,7 +63,7 @@ async function main() {
 		env: cleanEnv,
 		stdio: ["ignore", "pipe", "inherit"],
 	});
-	const client = new Client({ name: "http-smoke", version: "0.0.0" });
+	const client = new Client({ name: "test-http", version: "0.0.0" });
 
 	try {
 		await waitForHealth(`${base}/healthz`, child);
@@ -74,7 +74,7 @@ async function main() {
 		// integration ignored that callback argument and falsely logged a second
 		// server as connected when the port was already occupied.
 		const conflict = spawn(process.execPath, [
-			"dist/index.js",
+			"src/index.ts",
 			"--transport", "http",
 			"--auth", "none",
 			"--host", "127.0.0.1",
@@ -86,7 +86,7 @@ async function main() {
 		conflict.stderr.on("data", chunk => { conflictError += chunk; });
 		const conflictCode = await new Promise((resolve) => conflict.once("exit", resolve));
 		assert(conflictCode !== 0, "second HTTP server unexpectedly bound the occupied port");
-		assert(/EADDRINUSE/.test(conflictError), `missing EADDRINUSE diagnostic: ${conflictError}`);
+		assert(/EADDRINUSE|port .*in use/i.test(conflictError), `missing occupied-port diagnostic: ${conflictError}`);
 
 		const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`));
 		await client.connect(transport);

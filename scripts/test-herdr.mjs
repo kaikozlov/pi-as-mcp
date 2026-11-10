@@ -1,4 +1,4 @@
-// Protocol-level smoke test for the optional Herdr agent integration.
+// Protocol-level test for the optional Herdr agent integration.
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 if (process.platform === "win32") {
-	console.log("Herdr smoke skipped on Windows (fake executable uses a POSIX shebang)");
+	console.log("Herdr test skipped on Windows (fake executable uses a POSIX shebang)");
 	process.exit(0);
 }
 
@@ -24,7 +24,7 @@ const json = (content) => JSON.parse(text(content));
 async function connect(cwd, fakeHerdr, state, log, extraEnv = {}) {
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: ["dist/index.js", "--cwd", cwd],
+		args: ["src/index.ts", "--cwd", cwd],
 		env: {
 			...process.env,
 			PI_MCP_HERDR_SESSION: "pi-as-mcp-test",
@@ -43,7 +43,7 @@ async function connect(cwd, fakeHerdr, state, log, extraEnv = {}) {
 		},
 		stderr: "inherit",
 	});
-	const client = new Client({ name: "smoke-herdr", version: "0.0.0" });
+	const client = new Client({ name: "test-herdr", version: "0.0.0" });
 	await client.connect(transport);
 	return client;
 }
@@ -144,9 +144,6 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 		let payload = json(result.content);
 		assert(result.isError !== true && payload.default_agent === "omp" && payload.kinds.length === 4, `list_agents: ${text(result.content)}`);
 		assert(payload.kinds[0].integration === "current" && payload.kinds[3].integration === "outdated", `catalog integration: ${text(result.content)}`);
-
-		result = await client.callTool({ name: "spawn_agent", arguments: { kind: "hermes", name: "runtime", message: "must fail", cwd: "." } });
-		assert(result.isError === true && text(result.content).includes("reserved"), `reserved agent name: ${text(result.content)}`);
 
 		result = await client.callTool({ name: "spawn_agent", arguments: { message: "Default backend", cwd: "." } });
 		payload = json(result.content);
@@ -259,7 +256,7 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 			}
 		}
 
-		console.log("Herdr integration smoke passed");
+		console.log("Herdr integration test passed");
 	} finally {
 		for (const client of clients.reverse()) await client.close().catch(() => undefined);
 		await rm(dir, { recursive: true, force: true });

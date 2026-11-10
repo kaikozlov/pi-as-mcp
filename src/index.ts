@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * pi-as-mcp: expose pi's core coding tools as MCP over stdio or Streamable HTTP,
  * with an optional Herdr-backed persistent `agent` tool.

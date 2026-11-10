@@ -7,7 +7,6 @@ const MAX_WAIT_MS = 15_000;
 const DEFAULT_WAIT_MS = 10_000;
 const OUTPUT_LINES = 80;
 const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-const RESERVED_WORKSPACE_LABELS = new Set(["runtime"]);
 const SETTLED_STATES = ["idle", "done", "blocked"] as const;
 const WAIT_STATES = ["idle", "done", "blocked", "working"] as const;
 
@@ -120,9 +119,6 @@ function requireNonEmpty(value: string, field: string): string {
 function validateAgentName(value: string): string {
 	if (!AGENT_NAME_RE.test(value)) {
 		throw new Error("agent name must match [a-z][a-z0-9_-]{0,31}");
-	}
-	if (RESERVED_WORKSPACE_LABELS.has(value)) {
-		throw new Error(`agent name '${value}' is reserved for pi-as-mcp runtime infrastructure`);
 	}
 	return value;
 }
@@ -256,7 +252,7 @@ function chooseAgentName(
 	kind: string,
 ): string {
 	const existing = new Set(existingAgents.flatMap((agent) => agent.name ? [agent.name] : []));
-	const unavailable = (name: string) => existing.has(name) || reservedNames.has(name) || RESERVED_WORKSPACE_LABELS.has(name);
+	const unavailable = (name: string) => existing.has(name) || reservedNames.has(name);
 	if (requested !== undefined) {
 		const name = validateAgentName(requested);
 		if (unavailable(name)) throw new Error(`agent name '${name}' is already in use`);

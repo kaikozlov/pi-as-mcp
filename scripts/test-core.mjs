@@ -1,4 +1,4 @@
-// Protocol-level smoke test for pi-as-mcp. Exercises all four tools, schema
+// Protocol-level test for pi-as-mcp. Exercises all four tools, schema
 // validation, CLI/env configuration, image content, and common error paths.
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -22,11 +22,11 @@ const cleanEnv = () =>
 async function connect(args, env = cleanEnv()) {
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: ["dist/index.js", ...args],
+		args: ["src/index.ts", ...args],
 		env,
 		stderr: "inherit",
 	});
-	const client = new Client({ name: "smoke", version: "0.0.0" });
+	const client = new Client({ name: "test-core", version: "0.0.0" });
 	await client.connect(transport);
 	return client;
 }
@@ -164,7 +164,7 @@ async function main() {
 		});
 
 		await step("agent cannot be enabled without a dedicated Herdr session", async () => {
-			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--tools", "agent"], {
+			const result = spawnSync(process.execPath, ["src/index.ts", "--cwd", cwd, "--tools", "agent"], {
 				encoding: "utf8",
 				env: cleanEnv(),
 			});
@@ -173,7 +173,7 @@ async function main() {
 		});
 
 		await step("default Herdr session is rejected", async () => {
-			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", cwd, "--herdr-session", "default"], {
+			const result = spawnSync(process.execPath, ["src/index.ts", "--cwd", cwd, "--herdr-session", "default"], {
 				encoding: "utf8",
 				env: cleanEnv(),
 			});
@@ -183,20 +183,20 @@ async function main() {
 
 		await step("CLI --version matches package.json", async () => {
 			const pkg = JSON.parse(await readFile("package.json", "utf8"));
-			const result = spawnSync(process.execPath, ["dist/index.js", "--version"], { encoding: "utf8" });
+			const result = spawnSync(process.execPath, ["src/index.ts", "--version"], { encoding: "utf8" });
 			assert(result.status === 0, `status=${result.status}, stderr=${result.stderr}`);
 			assert(result.stdout.trim() === pkg.version, `stdout=${JSON.stringify(result.stdout)}`);
 		});
 
 		await step("CLI rejects an unknown argument", async () => {
-			const result = spawnSync(process.execPath, ["dist/index.js", "--wat"], { encoding: "utf8" });
+			const result = spawnSync(process.execPath, ["src/index.ts", "--wat"], { encoding: "utf8" });
 			assert(result.status !== 0, "unknown argument unexpectedly succeeded");
 			assert(/unknown argument/i.test(result.stderr), `stderr=${result.stderr}`);
 		});
 
 		await step("CLI rejects a nonexistent cwd", async () => {
 			const missing = join(cwd, "does-not-exist");
-			const result = spawnSync(process.execPath, ["dist/index.js", "--cwd", missing], { encoding: "utf8" });
+			const result = spawnSync(process.execPath, ["src/index.ts", "--cwd", missing], { encoding: "utf8" });
 			assert(result.status !== 0, "nonexistent cwd unexpectedly succeeded");
 			assert(/cannot access working directory/i.test(result.stderr), `stderr=${result.stderr}`);
 		});

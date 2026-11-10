@@ -249,7 +249,7 @@ function spawnJob(command: string, cwd: string): { id: string; paths: JobPaths; 
 }
 
 /**
- * Create a tunnel-safe bash definition. Short commands behave synchronously;
+ * Create a request-safe bash definition. Short commands behave synchronously;
  * commands that exceed maxSyncSeconds keep running as durable local sessions.
  */
 export function createManagedBashToolDefinition(cwd: string, maxSyncSeconds: number): ToolDefinition<any, any> {

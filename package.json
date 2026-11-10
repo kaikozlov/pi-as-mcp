@@ -4,60 +4,24 @@
   "description": "Expose pi core coding tools as MCP over stdio or Streamable HTTP, with optional persistent Herdr-backed coding agents.",
   "type": "module",
   "bin": {
-    "pi-mcp": "./dist/index.js"
+    "pi-mcp": "./src/index.ts"
   },
   "files": [
-    "dist/",
+    "src/",
     "LICENSE",
     "scripts/setup.sh",
-    "scripts/tunnel-install.sh",
-    "scripts/tunnel-runtime.mjs",
-    "scripts/tunnel.sh",
-    "tunnel/.env.example",
-    "tunnel/profile.yaml",
-    "scripts/http.sh",
-    "server/.env.example",
-    "scripts/cloudflare.sh",
-    "scripts/setup-http.sh"
+    "scripts/service.sh",
+    "server/.env.example"
   ],
   "scripts": {
     "dev": "bun src/index.ts",
-    "start": "node dist/index.js",
+    "test": "./scripts/test.sh",
     "setup": "./scripts/setup.sh",
-    "tunnel": "./scripts/tunnel.sh run",
-    "tunnel:start": "./scripts/tunnel.sh start",
-    "tunnel:attach": "./scripts/tunnel.sh attach",
-    "tunnel:session": "./scripts/tunnel.sh session",
-    "tunnel:stop": "./scripts/tunnel.sh stop",
-    "tunnel:info": "./scripts/tunnel.sh info",
-    "tunnel:foreground": "./scripts/tunnel.sh foreground",
-    "tunnel:doctor": "./scripts/tunnel.sh doctor",
-    "tunnel:status": "./scripts/tunnel.sh status",
-    "tunnel:ui": "./scripts/tunnel.sh ui",
-    "build": "bun run clean && tsc -p tsconfig.json && chmod +x dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist",
-    "smoke": "node scripts/smoke.mjs",
-    "smoke:cancel": "node scripts/cancel.mjs",
-    "smoke:sync-cap": "node scripts/smoke-sync-cap.mjs",
-    "smoke:herdr": "node scripts/smoke-herdr.mjs",
-    "smoke:tunnel-runtime": "node scripts/smoke-tunnel-runtime.mjs",
-    "test:shell": "bash -n scripts/*.sh",
-    "test": "bun run typecheck && bun run test:shell && bun run build && bun run smoke && bun run smoke:cancel && bun run smoke:sync-cap && bun run smoke:herdr && bun run smoke:http && bun run smoke:http-auth && bun run smoke:tunnel-runtime",
-    "prepack": "bun run build",
-    "http": "./scripts/http.sh run",
-    "http:status": "./scripts/http.sh status",
-    "smoke:http": "node scripts/http-smoke.mjs",
-    "smoke:http-auth": "node scripts/http-auth-smoke.mjs",
-    "http:start": "./scripts/http.sh start",
-    "http:stop": "./scripts/http.sh stop",
-    "http:logs": "./scripts/http.sh logs",
-    "cloudflare": "./scripts/cloudflare.sh run",
-    "cloudflare:start": "./scripts/cloudflare.sh start",
-    "cloudflare:stop": "./scripts/cloudflare.sh stop",
-    "cloudflare:status": "./scripts/cloudflare.sh status",
-    "cloudflare:logs": "./scripts/cloudflare.sh logs",
-    "setup:http": "./scripts/setup-http.sh"
+    "start": "./scripts/service.sh start",
+    "stop": "./scripts/service.sh stop",
+    "restart": "./scripts/service.sh restart",
+    "status": "./scripts/service.sh status",
+    "logs": "./scripts/service.sh logs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.5.2",
@@ -68,13 +32,9 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "typescript": "^7.0.2",
     "@types/express": "^5.0.6"
   },
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "packageManager": "bun@1.3.14",
+  "packageManager": "bun@1.4.4",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kaikozlov/pi-as-mcp.git"

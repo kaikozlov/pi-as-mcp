@@ -1,4 +1,4 @@
-// Verify tunnel-safe managed bash behavior.
+// Verify managed bash behavior for long-lived remote requests.
 // Long commands must yield locally before a remote response deadline, continue
 // running across an MCP server restart, and remain pollable by session ID.
 import { mkdtemp, rm } from "node:fs/promises";
@@ -21,14 +21,14 @@ async function connect(cwd) {
 	const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_MCP_")));
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: ["dist/index.js", "--cwd", cwd],
+		args: ["src/index.ts", "--cwd", cwd],
 		env: {
 			...baseEnv,
 			PI_MCP_BASH_MAX_SYNC_SECONDS: "0.2",
 		},
 		stderr: "inherit",
 	});
-	const client = new Client({ name: "managed-bash-smoke", version: "0.0.0" });
+	const client = new Client({ name: "managed-bash-test", version: "0.0.0" });
 	await client.connect(transport);
 	return { client, transport };
 }
@@ -59,7 +59,7 @@ async function main() {
 		const sessionId = match[1];
 		console.log(`yielded after ${elapsedMs}ms with session ${sessionId}`);
 
-		// Simulate the tunnel/MCP subprocess being restarted after the tool call
+		// Simulate the MCP subprocess being restarted after the tool call
 		// has already returned. The detached command must remain recoverable from
 		// its durable job files rather than being owned by the stdio request.
 		await first.client.close();
