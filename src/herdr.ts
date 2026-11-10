@@ -1,8 +1,4 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
 import { discoverAgentCatalog, type AgentCatalogEntry } from "./agent-catalog.js";
-
-const execFileAsync = promisify(execFile);
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const STARTUP_POLL_MS = 100;
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -80,10 +76,6 @@ function sanitizedHerdrEnv(): NodeJS.ProcessEnv {
 		delete env[key];
 	}
 	return env;
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 interface HerdrErrorEnvelope {
@@ -242,7 +234,7 @@ export class HerdrRuntime {
 			} catch (error) {
 				lastError = error;
 			}
-			await sleep(STARTUP_POLL_MS);
+			await Bun.sleep(STARTUP_POLL_MS);
 		}
 
 		const suffix = lastError instanceof Error ? `: ${lastError.message}` : "";
@@ -261,17 +253,20 @@ export class HerdrRuntime {
 	}
 
 	private spawnServer(): void {
-		const child = spawn(this.binary, ["--session", this.session, "server"], {
-			cwd: this.cwd,
-			detached: true,
-			env: sanitizedHerdrEnv(),
-			stdio: "ignore",
-			windowsHide: true,
-		});
-		child.once("error", () => {
+		try {
+			const child = Bun.spawn([this.binary, "--session", this.session, "server"], {
+				cwd: this.cwd,
+				detached: true,
+				env: sanitizedHerdrEnv(),
+				stdin: "ignore",
+				stdout: "ignore",
+				stderr: "ignore",
+				windowsHide: true,
+			});
+			child.unref();
+		} catch {
 			// Readiness polling will surface a deterministic startup failure.
-		});
-		child.unref();
+		}
 	}
 
 	private async exec(args: readonly string[], timeoutMs: number): Promise<string> {
@@ -280,16 +275,37 @@ export class HerdrRuntime {
 
 	private async execUnscoped(args: readonly string[], timeoutMs: number): Promise<string> {
 		try {
-			const { stdout } = await execFileAsync(this.binary, [...args], {
+			const child = Bun.spawn([this.binary, ...args], {
 				cwd: this.cwd,
-			env: sanitizedHerdrEnv(),
-			encoding: "utf8",
-			maxBuffer: MAX_BUFFER_BYTES,
-			timeout: timeoutMs,
-			windowsHide: true,
-		});
+				env: sanitizedHerdrEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+				timeout: timeoutMs,
+				maxBuffer: MAX_BUFFER_BYTES,
+				windowsHide: true,
+			});
+			const [exitCode, stdout, stderr] = await Promise.all([
+				child.exited,
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+			]);
+			if (exitCode !== 0) {
+				const envelope = parseHerdrErrorEnvelope(stderr) ?? parseHerdrErrorEnvelope(stdout);
+				const detail = envelope?.message ?? (
+					stderr.trim() || stdout.trim() ||
+					(child.signalCode ? `Herdr terminated by ${child.signalCode}` : `Herdr exited with code ${exitCode}`)
+				);
+				throw new HerdrCommandError(detail, {
+					stdout,
+					stderr,
+					code: exitCode,
+					herdrCode: envelope?.code,
+					herdrMessage: envelope?.message,
+				});
+			}
 			return stdout;
 		} catch (error) {
+			if (error instanceof HerdrCommandError) throw error;
 			throw errorDetail(error);
 		}
 	}

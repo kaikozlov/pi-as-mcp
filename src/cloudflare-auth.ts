@@ -1,4 +1,3 @@
-import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 export interface CloudflareAccessConfig {
@@ -25,28 +24,39 @@ export function parseCloudflareAccessConfig(env: NodeJS.ProcessEnv): CloudflareA
 	};
 }
 
-export function createCloudflareAccessMiddleware(config: CloudflareAccessConfig) {
+export function createCloudflareAccessGuard(config: CloudflareAccessConfig) {
 	const teamDomain = normalizeTeamDomain(config.teamDomain);
 	const jwks = createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`));
 
-	return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-		const token = req.header("cf-access-jwt-assertion");
+	return async (request: Request): Promise<Response | undefined> => {
+		const token = request.headers.get("cf-access-jwt-assertion");
 		if (!token) {
-			res.status(403).json({ error: "missing Cloudflare Access JWT" });
-			return;
+			return Response.json({ error: "missing Cloudflare Access JWT" }, { status: 403 });
 		}
 
 		try {
-			const { payload } = await jwtVerify(token, jwks, {
+			await jwtVerify(token, jwks, {
 				issuer: teamDomain,
 				audience: config.audience,
 			});
-			res.locals.cloudflareAccess = payload;
-			next();
+			return undefined;
 		} catch (error) {
-			const detail = error as { name?: string; code?: string; claim?: string; reason?: string; message?: string };
-			process.stderr.write(`${JSON.stringify({ event: "cloudflare_access_verify_failed", name: detail.name, code: detail.code, claim: detail.claim, reason: detail.reason, message: detail.message })}\n`);
-			res.status(403).json({ error: "invalid Cloudflare Access JWT" });
+			const detail = error as {
+				name?: string;
+				code?: string;
+				claim?: string;
+				reason?: string;
+				message?: string;
+			};
+			process.stderr.write(`${JSON.stringify({
+				event: "cloudflare_access_verify_failed",
+				name: detail.name,
+				code: detail.code,
+				claim: detail.claim,
+				reason: detail.reason,
+				message: detail.message,
+			})}\n`);
+			return Response.json({ error: "invalid Cloudflare Access JWT" }, { status: 403 });
 		}
 	};
 }

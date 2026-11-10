@@ -11,7 +11,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import {
 	createBashToolDefinition,
 	getShellConfig,
@@ -89,8 +88,10 @@ function processExists(pid: number): boolean {
 
 function killProcessGroup(pid: number): void {
 	if (process.platform === "win32") {
-		const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
-			stdio: "ignore",
+		const killer = Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], {
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: "ignore",
 			windowsHide: true,
 		});
 		killer.unref();
@@ -193,32 +194,15 @@ function pollJob(id: string, kill: boolean): { content: Array<{ type: "text"; te
 	return { content: [{ type: "text", text: formatOutput(paths, status) }], details: undefined };
 }
 
-function waitForExit(child: ChildProcess, ms: number): Promise<"exit" | "yield"> {
-	return new Promise((resolve, reject) => {
-		let settled = false;
-		const finish = (result: "exit" | "yield") => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			child.removeListener("error", onError);
-			child.removeListener("exit", onExit);
-			resolve(result);
-		};
-		const onError = (error: Error) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			child.removeListener("exit", onExit);
-			reject(error);
-		};
-		const onExit = () => finish("exit");
-		const timer = setTimeout(() => finish("yield"), ms);
-		child.once("error", onError);
-		child.once("exit", onExit);
-	});
+async function waitForExit(child: Bun.Subprocess, ms: number): Promise<"exit" | "yield"> {
+	if (child.exitCode !== null) return "exit";
+	return Promise.race([
+		child.exited.then(() => "exit" as const),
+		Bun.sleep(ms).then(() => child.exitCode === null ? "yield" as const : "exit" as const),
+	]);
 }
 
-function spawnJob(command: string, cwd: string): { id: string; paths: JobPaths; child: ChildProcess } {
+function spawnJob(command: string, cwd: string): { id: string; paths: JobPaths; child: Bun.Subprocess } {
 	mkdirSync(JOB_ROOT, { recursive: true, mode: 0o700 });
 	const id = randomUUID();
 	const paths = pathsFor(id);
@@ -231,17 +215,22 @@ function spawnJob(command: string, cwd: string): { id: string; paths: JobPaths; 
 	// The wrapper writes its own exit status so sessions remain pollable even if
 	// pi-as-mcp or the tunnel is restarted while the command is still running.
 	const wrapper = `${JSON.stringify(paths.command)}; code=$?; printf '%s\\n' "$code" > ${JSON.stringify(paths.exit)}; exit "$code"`;
-	const child = spawn(shell.shell, [...shell.args, wrapper], {
-		cwd,
-		detached: process.platform !== "win32",
-		env: process.env,
-		stdio: ["ignore", logFd, logFd],
-		windowsHide: true,
-	});
-	closeSync(logFd);
-	if (!child.pid) {
+	let child: Bun.Subprocess;
+	try {
+		child = Bun.spawn([shell.shell, ...shell.args, wrapper], {
+			cwd,
+			detached: process.platform !== "win32",
+			env: process.env,
+			stdin: "ignore",
+			stdout: logFd,
+			stderr: logFd,
+			windowsHide: true,
+		});
+	} catch (error) {
 		rmSync(paths.dir, { recursive: true, force: true });
-		throw new Error("Failed to start bash command");
+		throw error;
+	} finally {
+		closeSync(logFd);
 	}
 	writeFileSync(paths.pid, `${child.pid}\n`, { encoding: "utf8", mode: 0o600 });
 	child.unref();

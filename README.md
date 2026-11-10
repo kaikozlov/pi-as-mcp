@@ -60,10 +60,11 @@ For development:
 
 ```bash
 bun run dev
-bun run test
+bun check
+bun test
 ```
 
-That is the complete package command surface.
+`bun check` and `bun test` are native Bun commands, not package-script wrappers. The package scripts are reserved for application lifecycle commands.
 
 ## Configuration
 
@@ -131,24 +132,24 @@ Or configure the client to launch `src/index.ts` with Bun directly.
 
 ## Testing
 
-There is one public test command:
+Tests use Bun's native test runner and `bun:test` APIs:
 
 ```bash
-bun run test
+bun check
+bun test
 ```
 
-It performs:
+Bun discovers the TypeScript tests under `test/*.test.ts` using `bunfig.toml`. A preload removes live `PI_MCP_*` and Cloudflare Access environment variables before the suite runs so tests cannot accidentally inherit the deployed server configuration.
 
-1. TypeScript typechecking with `bun check`
-2. shell syntax validation
-3. core MCP protocol/tool tests
-4. cancellation/process-tree tests
-5. managed-bash persistence tests
-6. Herdr integration tests
-7. Streamable HTTP tests
-8. Cloudflare Access authentication tests
+The suite covers core MCP tools and CLI behavior, cancellation/process-tree handling, managed-bash persistence, Herdr integration, Streamable HTTP, Cloudflare Access authentication, and shell-script syntax.
 
-The individual test files live under `scripts/test-*.mjs`, but they are implementation details rather than package commands.
+Useful native runner modes work without additional project scripts:
+
+```bash
+bun test --watch
+bun test --coverage
+bun test --test-name-pattern cancellation
+```
 
 ## Security
 
@@ -177,13 +178,17 @@ src/
 scripts/
   setup.sh
   service.sh
-  test.sh
-  test-core.mjs
-  test-cancel.mjs
-  test-managed-bash.mjs
-  test-herdr.mjs
-  test-http.mjs
-  test-http-auth.mjs
+
+test/
+  setup.ts
+  helpers.ts
+  core.test.ts
+  cancel.test.ts
+  managed-bash.test.ts
+  herdr.test.ts
+  http.test.ts
+  http-auth.test.ts
+  shell.test.ts
 
 server/
   .env.example

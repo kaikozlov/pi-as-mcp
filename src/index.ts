@@ -7,13 +7,12 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import {
-	createCloudflareAccessMiddleware,
+	createCloudflareAccessGuard,
 	parseCloudflareAccessConfig,
 } from "./cloudflare-auth.js";
 import { HerdrRuntime } from "./herdr.js";
@@ -362,105 +361,219 @@ async function runStdio(opts: Options, herdr: HerdrRuntime | undefined): Promise
 	logLifecycle("connected", { transport: "stdio" });
 }
 
+function jsonRpcError(status: number, code: number, message: string): Response {
+	return Response.json({
+		jsonrpc: "2.0",
+		error: { code, message },
+		id: null,
+	}, { status });
+}
+
+function normalizedAllowedHostname(value: string): string {
+	if (value === "::1") return "[::1]";
+	try {
+		return new URL(`http://${value}`).hostname;
+	} catch {
+		return value;
+	}
+}
+
+function validateHostHeader(request: Request, allowedHosts: ReadonlySet<string>): Response | undefined {
+	const hostHeader = request.headers.get("host");
+	if (!hostHeader) return jsonRpcError(403, -32000, "Missing Host header");
+
+	let hostname: string;
+	try {
+		hostname = new URL(`http://${hostHeader}`).hostname;
+	} catch {
+		return jsonRpcError(403, -32000, `Invalid Host header: ${hostHeader}`);
+	}
+	if (!allowedHosts.has(hostname)) {
+		return jsonRpcError(403, -32000, `Invalid Host: ${hostname}`);
+	}
+	return undefined;
+}
+
+async function withHttpLifecycle(
+	request: Request,
+	handle: () => Promise<Response>,
+): Promise<Response> {
+	const requestId = randomUUID();
+	const startedAt = Date.now();
+	const requestPath = new URL(request.url).pathname;
+	let ended = false;
+
+	logLifecycle("http_request_start", {
+		request_id: requestId,
+		method: request.method,
+		path: requestPath,
+		has_session: request.headers.has("mcp-session-id"),
+	});
+
+	const finish = (status: number, closedEarly: boolean): void => {
+		if (ended) return;
+		ended = true;
+		logLifecycle("http_request_end", {
+			request_id: requestId,
+			method: request.method,
+			path: requestPath,
+			status,
+			duration_ms: Date.now() - startedAt,
+			closed_early: closedEarly,
+		});
+	};
+
+	let response: Response;
+	try {
+		response = await handle();
+	} catch (error) {
+		logLifecycle("http_request_error", {
+			request_id: requestId,
+			name: error instanceof Error ? error.name : "unknown",
+		});
+		response = jsonRpcError(500, -32603, "Internal server error");
+	}
+
+	if (!response.body) {
+		finish(response.status, false);
+		return response;
+	}
+
+	const reader = response.body.getReader();
+	const body = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read();
+				if (done) {
+					finish(response.status, false);
+					controller.close();
+					return;
+				}
+				controller.enqueue(value);
+			} catch (error) {
+				finish(response.status, true);
+				controller.error(error);
+			}
+		},
+		async cancel(reason) {
+			finish(response.status, true);
+			await reader.cancel(reason);
+		},
+	});
+	return new Response(body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
+}
+
 async function runHttp(opts: Options, herdr: HerdrRuntime | undefined): Promise<void> {
-	const allowedHosts = [...new Set([opts.host, "localhost", "127.0.0.1", ...opts.allowedHosts])];
-	const app = createMcpExpressApp({ host: opts.host, allowedHosts });
-	const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: Server; openedAt: number }>();
-
-	app.use((req, res, next) => {
-		const requestId = randomUUID();
-		const startedAt = Date.now();
-		const requestPath = req.originalUrl.split("?", 1)[0] || req.path;
-		let finished = false;
-		logLifecycle("http_request_start", { request_id: requestId, method: req.method, path: requestPath, has_session: !!req.header("mcp-session-id") });
-		res.once("finish", () => {
-			finished = true;
-			logLifecycle("http_request_end", { request_id: requestId, method: req.method, path: requestPath, status: res.statusCode, duration_ms: Date.now() - startedAt, closed_early: false });
-		});
-		res.once("close", () => {
-			if (!finished) logLifecycle("http_request_end", { request_id: requestId, method: req.method, path: requestPath, status: res.statusCode, duration_ms: Date.now() - startedAt, closed_early: true });
-		});
-		next();
-	});
-
-	app.get("/healthz", (_req, res) => {
-		res.json({ status: "ok", name: "pi-as-mcp", version: VERSION, sessions: sessions.size, uptime_seconds: Math.floor(process.uptime()) });
-	});
-
-	if (opts.auth === "cloudflare-access") {
-		app.use(opts.path, createCloudflareAccessMiddleware(parseCloudflareAccessConfig(process.env)));
-	} else if (opts.host !== "127.0.0.1" && opts.host !== "localhost" && opts.host !== "::1") {
+	if (opts.auth === "none" && opts.host !== "127.0.0.1" && opts.host !== "localhost" && opts.host !== "::1") {
 		throw new Error("Refusing unauthenticated HTTP mode on a non-loopback bind address");
 	}
 
-	app.post(opts.path, async (req, res) => {
-		const sessionId = req.header("mcp-session-id");
-		try {
+	const allowedHosts = new Set(
+		[opts.host, "localhost", "127.0.0.1", "::1", ...opts.allowedHosts].map(normalizedAllowedHostname),
+	);
+	const accessGuard = opts.auth === "cloudflare-access"
+		? createCloudflareAccessGuard(parseCloudflareAccessConfig(process.env))
+		: undefined;
+	const sessions = new Map<string, {
+		transport: WebStandardStreamableHTTPServerTransport;
+		server: Server;
+		openedAt: number;
+	}>();
+
+	const createTransport = async (): Promise<{
+		transport: WebStandardStreamableHTTPServerTransport;
+		server: Server;
+	}> => {
+		const server = createPiMcpServer(opts, herdr);
+		let transport: WebStandardStreamableHTTPServerTransport;
+		transport = new WebStandardStreamableHTTPServerTransport({
+			sessionIdGenerator: () => randomUUID(),
+			onsessioninitialized: (sessionId) => {
+				sessions.set(sessionId, { transport, server, openedAt: Date.now() });
+				logLifecycle("http_session_open", {
+					session_id: sessionId,
+					active_sessions: sessions.size,
+				});
+			},
+			keepAliveMs: 15_000,
+		});
+		transport.onclose = () => {
+			const sessionId = transport.sessionId;
 			if (sessionId) {
 				const session = sessions.get(sessionId);
-				if (!session) {
-					res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Unknown MCP session" }, id: null });
-					return;
-				}
-				await session.transport.handleRequest(req, res, req.body);
-				return;
+				sessions.delete(sessionId);
+				logLifecycle("http_session_close", {
+					session_id: sessionId,
+					lifetime_ms: session ? Date.now() - session.openedAt : undefined,
+					active_sessions: sessions.size,
+				});
 			}
-			if (!isInitializeRequest(req.body)) {
-				res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Missing MCP session ID" }, id: null });
-				return;
-			}
+			void server.close().catch(() => undefined);
+		};
+		await server.connect(transport);
+		return { transport, server };
+	};
 
-			const server = createPiMcpServer(opts, herdr);
-			let transport: StreamableHTTPServerTransport;
-			transport = new StreamableHTTPServerTransport({
-				sessionIdGenerator: () => randomUUID(),
-				onsessioninitialized: (newSessionId) => {
-					sessions.set(newSessionId, { transport, server, openedAt: Date.now() });
-					logLifecycle("http_session_open", { session_id: newSessionId, active_sessions: sessions.size });
-				},
-				keepAliveMs: 15_000,
-			});
-			transport.onclose = () => {
-				const closedSessionId = transport.sessionId;
-				if (closedSessionId) {
-					const session = sessions.get(closedSessionId);
-					sessions.delete(closedSessionId);
-					logLifecycle("http_session_close", { session_id: closedSessionId, lifetime_ms: session ? Date.now() - session.openedAt : undefined, active_sessions: sessions.size });
-				}
-				void server.close().catch(() => undefined);
-			};
-			await server.connect(transport);
-			await transport.handleRequest(req, res, req.body);
-		} catch (error) {
-			logLifecycle("http_request_error", { name: error instanceof Error ? error.name : "unknown" });
-			if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
+	const handleMcp = async (request: Request): Promise<Response> => {
+		const authFailure = accessGuard ? await accessGuard(request) : undefined;
+		if (authFailure) return authFailure;
+
+		const sessionId = request.headers.get("mcp-session-id") ?? undefined;
+		if (sessionId) {
+			const session = sessions.get(sessionId);
+			if (!session) return jsonRpcError(404, -32001, "Unknown MCP session");
+			return session.transport.handleRequest(request);
 		}
-	});
 
-	const getSession = (sessionId: string | undefined) => sessionId ? sessions.get(sessionId) : undefined;
-	app.get(opts.path, async (req, res) => {
-		const session = getSession(req.header("mcp-session-id"));
-		if (!session) { res.status(400).send("Invalid or missing MCP session ID"); return; }
-		await session.transport.handleRequest(req, res);
-	});
-	app.delete(opts.path, async (req, res) => {
-		const session = getSession(req.header("mcp-session-id"));
-		if (!session) { res.status(400).send("Invalid or missing MCP session ID"); return; }
-		await session.transport.handleRequest(req, res);
-	});
+		if (request.method !== "POST") {
+			return new Response("Invalid or missing MCP session ID", { status: 400 });
+		}
 
-	await new Promise<void>((resolveListen, rejectListen) => {
-		// Express 5 invokes the listen callback with an Error when bind fails.
-		// Treat that as startup failure; ignoring the callback argument makes an
-		// EADDRINUSE look like a successful connection followed by a clean exit.
-		app.listen(opts.port, opts.host, (error?: Error) => {
-			if (error) {
-				rejectListen(error);
-				return;
-			}
-			logLifecycle("connected", { transport: "http", host: opts.host, port: opts.port, path: opts.path, auth: opts.auth });
-			resolveListen();
+		const { transport } = await createTransport();
+		const response = await transport.handleRequest(request);
+		if (!transport.sessionId) {
+			await transport.close().catch(() => undefined);
+		}
+		return response;
+	};
+
+	try {
+		Bun.serve({
+			hostname: opts.host,
+			port: opts.port,
+			fetch: (request) => withHttpLifecycle(request, async () => {
+				const hostFailure = validateHostHeader(request, allowedHosts);
+				if (hostFailure) return hostFailure;
+
+				const pathname = new URL(request.url).pathname;
+				if (request.method === "GET" && pathname === "/healthz") {
+					return Response.json({
+						status: "ok",
+						name: "pi-as-mcp",
+						version: VERSION,
+						sessions: sessions.size,
+						uptime_seconds: Math.floor(process.uptime()),
+					});
+				}
+				if (pathname === opts.path) return handleMcp(request);
+				return new Response("Not Found", { status: 404 });
+			}),
 		});
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to start server on ${opts.host}:${opts.port}: ${detail}`);
+	}
+
+	logLifecycle("connected", {
+		transport: "http",
+		host: opts.host,
+		port: opts.port,
+		path: opts.path,
+		auth: opts.auth,
 	});
 }
 
