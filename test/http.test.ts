@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, watch } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,34 +277,35 @@ describe("Streamable HTTP transport", () => {
 	}, 10_000);
 
 	test("closing a modern HTTP stream cancels its in-flight call", async () => {
-		const started = Promise.withResolvers<void>();
-		const cancelled = Promise.withResolvers<void>();
-		const watcher = watch(cwd, (_, filename) => {
-			if (filename === "modern-started") started.resolve();
-			if (filename !== "lifecycle.jsonl") return;
-			const events = readFileSync(logPath, "utf8");
-			if (events.split("\n").some((line) =>
+		const signal = AbortSignal.timeout(8_000);
+		// Poll for durable evidence instead of relying on filesystem notifications.
+		async function waitFor(condition: () => Promise<boolean>, message: string): Promise<void> {
+			while (!signal.aborted) {
+				if (await condition()) return;
+				await Bun.sleep(50);
+			}
+			throw new Error(message);
+		}
+
+		const response = await modernPost("tools/call", {
+			name: "bash", arguments: { command: "touch modern-started; sleep 30; touch modern-finished" },
+		}, {}, signal);
+		expect(response.headers.get("content-type")).toBe("text/event-stream");
+		await waitFor(() => Bun.file(join(cwd, "modern-started")).exists(), "The bash command did not start.");
+		await response.body!.cancel();
+		await waitFor(async () => {
+			const events = await Bun.file(logPath).text();
+			return events.split("\n").some((line) =>
 				line.includes('"event":"tool_call_end"') &&
 				line.includes('"request_id":"modern"') &&
 				line.includes('"aborted":true')
-			)) cancelled.resolve();
+			);
+		}, "The server did not record the cancelled bash call.");
+		expect(await Bun.file(join(cwd, "modern-finished")).exists()).toBe(false);
+		expect(await readRpc(await modernPost("tools/call", {
+			name: "bash", arguments: { command: "printf 'survived-disconnect'" },
+		}, {}, signal))).toMatchObject({
+			result: { content: [{ type: "text", text: "survived-disconnect" }] },
 		});
-		try {
-			const response = await modernPost("tools/call", {
-				name: "bash", arguments: { command: "touch modern-started; sleep 30; touch modern-finished" },
-			}, {}, AbortSignal.timeout(8_000));
-			expect(response.headers.get("content-type")).toBe("text/event-stream");
-			await started.promise;
-			await response.body!.cancel();
-			await cancelled.promise;
-			expect(await Bun.file(join(cwd, "modern-finished")).exists()).toBe(false);
-			expect(await readRpc(await modernPost("tools/call", {
-				name: "bash", arguments: { command: "printf 'survived-disconnect'" },
-			}))).toMatchObject({
-				result: { content: [{ type: "text", text: "survived-disconnect" }] },
-			});
-		} finally {
-			watcher.close();
-		}
 	});
 });
