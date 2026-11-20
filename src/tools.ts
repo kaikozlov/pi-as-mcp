@@ -5,19 +5,24 @@
  * Herdr runtime is configured, the `agent` selector expands to a small set of
  * model-facing subagent tools while Herdr continues to own process/lifecycle state.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	createBashToolDefinition,
+	createCodemodeExtension,
 	createEditToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
+	SessionManager,
+	type ExtensionAPI,
 	type ToolDefinition,
+	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolAnnotations } from "@modelcontextprotocol/server";
 import { AGENT_TOOL_NAMES, createAgentToolDefinitions, type AgentToolName } from "./agent-tool.js";
 import { HerdrRuntime } from "./herdr.js";
 import { createManagedBashToolDefinition } from "./managed-bash.js";
 
-export const PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
+export const PI_TOOL_NAMES = ["read", "write", "edit", "bash", "codemode"] as const;
 export const TOOL_SELECTORS = [...PI_TOOL_NAMES, "agent", ...AGENT_TOOL_NAMES] as const;
 export type ToolSelector = (typeof TOOL_SELECTORS)[number];
 export type ExposedToolName = (typeof PI_TOOL_NAMES)[number] | AgentToolName;
@@ -83,12 +88,46 @@ export function createTools(
 		}
 	}
 
+	if (wanted.has("codemode")) {
+		const sessions = new AsyncLocalStorage<SessionManager>();
+		const available: ToolInfo[] = tools.map(({ name, definition }) => ({
+			name,
+			description: definition.description,
+			parameters: definition.parameters,
+			promptGuidelines: definition.promptGuidelines,
+			exposure: "direct",
+			sourceInfo: { path: import.meta.path, source: "pi-as-mcp", scope: "temporary", origin: "top-level" },
+		}));
+		const registered: McpTool["definition"][] = [];
+		const api = {
+			registerTool: (tool) => { registered.push(tool); },
+			getAllTools: () => available,
+			appendEntry(type, data) {
+				const session = sessions.getStore();
+				if (!session) throw new Error("No active Code Mode call.");
+				session.appendCustomEntry(type, data);
+			},
+		} satisfies Pick<ExtensionAPI, "registerTool" | "getAllTools" | "appendEntry">;
+		createCodemodeExtension({ models: false, mode: "on" })(api as ExtensionAPI);
+		const [definition] = registered;
+		if (!definition) throw new Error("Pi did not register codemode.");
+		definition.description = definition.description
+			.replace("The input is raw JavaScript (not JSON, no code fence), run", "Put JavaScript in the `code` argument without code fences. The code runs")
+			.replace("keep JSON values across codemode calls.", "keep JSON values in the current script.");
+		const execute = definition.execute;
+		definition.execute = (id, args, signal, onUpdate, context) => {
+			// Keep Pi's store isolated to this MCP call.
+			const sessionManager = SessionManager.inMemory(cwd);
+			return sessions.run(sessionManager, () => execute(id, args, signal, onUpdate, { ...context, sessionManager }));
+		};
+		tools.push({ name: "codemode", definition });
+	}
+
 	return tools;
 }
 
-const READ_ONLY: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+const READ_ONLY: ToolAnnotations = { openWorldHint: false };
 const LOCAL_MUTATION: ToolAnnotations = {
-	readOnlyHint: false,
 	destructiveHint: true,
 	idempotentHint: false,
 	openWorldHint: false,
@@ -100,6 +139,7 @@ export const MCP_ANNOTATIONS: Record<ExposedToolName, ToolAnnotations> = {
 	write: LOCAL_MUTATION,
 	edit: LOCAL_MUTATION,
 	bash: OPEN_WORLD_MUTATION,
+	codemode: OPEN_WORLD_MUTATION,
 	list_agents: READ_ONLY,
 	spawn_agent: OPEN_WORLD_MUTATION,
 	send_input: OPEN_WORLD_MUTATION,

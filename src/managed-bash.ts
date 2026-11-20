@@ -242,6 +242,8 @@ function spawnJob(command: string, cwd: string): { id: string; paths: JobPaths; 
 export function createManagedBashToolDefinition(cwd: string, maxSyncSeconds: number): ToolDefinition<any, any> {
 	const base = createBashToolDefinition(cwd, { exposeSessionEnvironment: false }) as ToolDefinition<any, any>;
 	const maxSyncMs = maxSyncSeconds * 1000;
+	// Managed jobs return text, not native Bash's structured result.
+	delete base.outputSchema;
 
 	base.description =
 		`Execute a bash command in ${cwd}. Commands that finish within ${maxSyncSeconds} seconds return normally. ` +

@@ -123,6 +123,7 @@ describe("Streamable HTTP transport", () => {
 					expect.objectContaining({ name: "write" }),
 					expect.objectContaining({ name: "edit" }),
 					expect.objectContaining({ name: "bash" }),
+					expect.objectContaining({ name: "codemode" }),
 				],
 			},
 		});
@@ -192,7 +193,7 @@ describe("Streamable HTTP transport", () => {
 			mcp_error_code: -32020, mcp_method_header: "tools/call", mcp_version_header: REVISION,
 		}));
 		expect(log).not.toContain("private-tool-name");
-		expect((await client.listTools()).tools).toHaveLength(4);
+		expect((await client.listTools()).tools).toHaveLength(5);
 	});
 
 	test("rejects GET and DELETE with 405 regardless of legacy hints", async () => {
@@ -208,7 +209,7 @@ describe("Streamable HTTP transport", () => {
 				await response.body?.cancel();
 			}
 		}
-		expect((await client.listTools()).tools).toHaveLength(4);
+		expect((await client.listTools()).tools).toHaveLength(5);
 	});
 
 	test("a second server cannot bind the occupied port", async () => {
@@ -235,16 +236,21 @@ describe("Streamable HTTP transport", () => {
 		expect(stderr).toMatch(/EADDRINUSE|port .*in use/i);
 	});
 
-	test("exposes the four core tools over HTTP", async () => {
-		const listed = await client.listTools();
-		expect(listed.tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
-
+	test("runs Pi codemode over HTTP with Bash, write, edit, and read", async () => {
 		const result = await client.callTool({
-			name: "bash",
-			arguments: { command: "printf 'http-ok'" },
+			name: "codemode",
+			arguments: { code: `
+				const { output } = await tools.bash({ command: "printf intermediate" });
+				await tools.write({ path: "codemode.txt", content: output });
+				await tools.edit({ path: "codemode.txt", edits: [{ oldText: "intermediate", newText: "codemode-ok" }] });
+				return await tools.read({ path: "codemode.txt" });
+			` },
 		});
-		expect(result.isError).not.toBe(true);
-		expect(contentText(result.content)).toContain("http-ok");
+		const text = contentText(result.content);
+		expect(result.isError, text).not.toBe(true);
+		expect(text).toContain("codemode-ok");
+		expect(text).not.toContain("intermediate");
+		expect(await Bun.file(join(cwd, "codemode.txt")).text()).toBe("codemode-ok");
 	});
 
 	test("HTTP cancellation kills only the active bash request", async () => {
@@ -276,7 +282,7 @@ describe("Streamable HTTP transport", () => {
 		expect(ticks.length).toBeLessThan(5);
 	}, 10_000);
 
-	test("closing a modern HTTP stream cancels its in-flight call", async () => {
+	test("closing an HTTP stream cancels a Bash call inside codemode", async () => {
 		const signal = AbortSignal.timeout(8_000);
 		// Poll for durable evidence instead of relying on filesystem notifications.
 		async function waitFor(condition: () => Promise<boolean>, message: string): Promise<void> {
@@ -288,7 +294,8 @@ describe("Streamable HTTP transport", () => {
 		}
 
 		const response = await modernPost("tools/call", {
-			name: "bash", arguments: { command: "touch modern-started; sleep 30; touch modern-finished" },
+			name: "codemode",
+			arguments: { code: `await tools.bash({ command: "touch modern-started; sleep 30; touch modern-finished" });` },
 		}, {}, signal);
 		expect(response.headers.get("content-type")).toBe("text/event-stream");
 		await waitFor(() => Bun.file(join(cwd, "modern-started")).exists(), "The bash command did not start.");
@@ -297,7 +304,7 @@ describe("Streamable HTTP transport", () => {
 			const events = await Bun.file(logPath).text();
 			return events.split("\n").some((line) =>
 				line.includes('"event":"tool_call_end"') &&
-				line.includes('"request_id":"modern"') &&
+				line.includes('"request_id":"modern/1"') &&
 				line.includes('"aborted":true')
 			);
 		}, "The server did not record the cancelled bash call.");

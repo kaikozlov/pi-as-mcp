@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import type { AgentToolResult, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import {
 	classifyInboundRequest,
 	createMcpHandler,
@@ -140,8 +141,7 @@ function printHelp(): void {
 	out.write("  -h, --help               Show this help.\n\n");
 	out.write("Cloudflare Access auth requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD.\n");
 	out.write("Set PI_MCP_LOG_FILE to persist lifecycle diagnostics as JSONL.\n");
-	out.write("These are pi's unsandboxed tools. --cwd controls relative-path resolution only;\n");
-	out.write("absolute paths remain accessible, exactly as in pi itself.\n");
+	out.write("--cwd sets the base directory for relative paths. Tools can still access absolute paths.\n");
 }
 
 const isToolSelector = (value: string): value is ToolSelector =>
@@ -277,21 +277,11 @@ function toMcpContent(
 	});
 }
 
-type PiResult = {
-	content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>;
-	isError?: boolean;
-};
+type PiMcpResult = AgentToolResult<unknown>;
+type NestedToolOutcome = Awaited<ReturnType<ExtensionToolContext["executeTool"]>>;
 
-type PiExecute = (
-	toolCallId: string,
-	params: unknown,
-	signal: AbortSignal,
-	onUpdate: undefined,
-	ctx: undefined,
-) => Promise<PiResult>;
-
-function toolError(text: string) {
-	return { content: [{ type: "text" as const, text }], isError: true };
+function toolError(text: string): PiMcpResult {
+	return { content: [{ type: "text", text }], details: undefined, isError: true };
 }
 
 async function createHerdrRuntime(opts: Options): Promise<HerdrRuntime | undefined> {
@@ -333,7 +323,13 @@ function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined
 	const catalog = tools.map(({ name, definition }): Tool => {
 		const inputSchema = JSON.parse(JSON.stringify(definition.parameters)) as Tool["inputSchema"] & JsonSchemaType;
 		byName.set(name, { definition, validate: validatorProvider.getValidator(inputSchema) });
-		return { name, description: definition.description, inputSchema, annotations: { ...MCP_ANNOTATIONS[name], title: definition.label } };
+		// ChatGPT can stop using tools in an existing chat without this hint. It does not restrict execution.
+		return {
+			name,
+			description: definition.description,
+			inputSchema,
+			annotations: { ...MCP_ANNOTATIONS[name], title: definition.label, readOnlyHint: true },
+		};
 	});
 	let windowEndsAt = 0;
 	let remainingCalls = 0;
@@ -348,40 +344,78 @@ function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined
 				: []),
 		...guidelines,
 	].join("\n");
+	const callable: ExtensionToolContext["tools"] = byName.has("codemode")
+		? tools.filter(({ name }) => name !== "codemode").map(({ name, definition }) => ({
+			name,
+			label: definition.label,
+			description: definition.description,
+			parameters: definition.parameters,
+			outputSchema: definition.outputSchema,
+			execute: (id, args, signal) => invokeTool(name, args, id, signal),
+		}))
+		: [];
+
+	function codemodeContext(requestId: string, signal: AbortSignal | undefined): ExtensionToolContext {
+		let nextCall = 0;
+		const context: Pick<ExtensionToolContext, "tools" | "executeTool"> = {
+			tools: callable,
+			async executeTool(name, args, options) {
+				const id = `${requestId}/${++nextCall}`;
+				const result = name !== "codemode" && byName.has(name)
+					? await invokeTool(name, args, id, options?.signal ?? signal)
+					: toolError(`Unknown nested tool: ${name}`);
+				return {
+					toolCall: {
+						type: "toolCall", id, name,
+						arguments: args && typeof args === "object" && !Array.isArray(args)
+							? args as NestedToolOutcome["toolCall"]["arguments"]
+							: {},
+					},
+					result,
+					isError: result.isError === true,
+				};
+			},
+		};
+		return context as ExtensionToolContext;
+	}
+
+	async function invokeTool(name: string, args: unknown, requestId: string, signal?: AbortSignal): Promise<PiMcpResult> {
+		const startedAt = Date.now();
+		logLifecycle("tool_call_start", { tool: name, request_id: requestId });
+		try {
+			const tool = byName.get(name);
+			if (!tool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
+
+			const now = performance.now();
+			if (now >= windowEndsAt) {
+				windowEndsAt = now + TOOL_CALL_WINDOW_MS;
+				remainingCalls = TOOL_CALL_LIMIT;
+			}
+			if (remainingCalls === 0) return toolError("Tool call rate limit reached. Try again after 10 seconds.");
+			remainingCalls--;
+
+			const { definition, validate } = tool;
+			try {
+				signal?.throwIfAborted();
+				const rawParams = definition.prepareArguments ? definition.prepareArguments(args ?? {}) : (args ?? {});
+				const validation = validate(rawParams);
+				if (!validation.valid) return toolError(`Invalid arguments for ${name}: ${validation.errorMessage}`);
+				const context = name === "codemode" ? codemodeContext(requestId, signal) : undefined;
+				return await definition.execute(requestId, validation.data, signal, undefined, context as ExtensionToolContext);
+			} catch (error) {
+				return toolError(error instanceof Error ? error.message : String(error));
+			}
+		} finally {
+			logLifecycle("tool_call_end", { tool: name, request_id: requestId, duration_ms: Date.now() - startedAt, aborted: signal?.aborted ?? false });
+		}
+	}
 	return () => {
 		const server = new Server({ name: "pi-as-mcp", version: VERSION }, { capabilities: { tools: {} }, instructions });
 		server.setRequestHandler("tools/list", async () => ({ tools: catalog }));
 		server.setRequestHandler("tools/call", async ({ params }, { mcpReq }) => {
 			const { name, arguments: args } = params;
-			const requestId = String(mcpReq.id);
-			const startedAt = Date.now();
-			logLifecycle("tool_call_start", { tool: name, request_id: requestId });
-			try {
-				const tool = byName.get(name);
-				if (!tool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
-
-				const now = performance.now();
-				if (now >= windowEndsAt) {
-					windowEndsAt = now + TOOL_CALL_WINDOW_MS;
-					remainingCalls = TOOL_CALL_LIMIT;
-				}
-				if (remainingCalls === 0) return toolError("Tool call rate limit reached. Try again after 10 seconds.");
-				remainingCalls--;
-
-				const { definition, validate } = tool;
-				let result: PiResult;
-				try {
-					const rawParams = definition.prepareArguments ? definition.prepareArguments(args ?? {}) : (args ?? {});
-					const validation = validate(rawParams);
-					if (!validation.valid) return toolError(`Invalid arguments for ${name}: ${validation.errorMessage}`);
-					result = await (definition.execute as unknown as PiExecute)(requestId, validation.data, mcpReq.signal, undefined, undefined);
-				} catch (error) {
-					return toolError(error instanceof Error ? error.message : String(error));
-				}
-				return { content: toMcpContent(result.content), isError: result.isError };
-			} finally {
-				logLifecycle("tool_call_end", { tool: name, request_id: requestId, duration_ms: Date.now() - startedAt, aborted: mcpReq.signal.aborted });
-			}
+			const result = await invokeTool(name, args, String(mcpReq.id), mcpReq.signal);
+			return { content: toMcpContent(result.content), isError: result.isError };
 		});
 		return server;
 	};

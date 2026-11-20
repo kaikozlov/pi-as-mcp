@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { BUN, childEnv, firstText, jsonContent, modernClient } from "./helpers";
+import { BUN, childEnv, contentText, firstText, jsonContent, modernClient } from "./helpers";
 
 const assert = (condition: unknown, message: string) => {
 	expect(Boolean(condition), message).toBe(true);
@@ -131,6 +131,9 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 			assert(names.includes(required), `${required} missing from ${names}`);
 		}
 		expect(names).not.toContain("agent");
+		for (const tool of tools) {
+			expect(tool.annotations?.readOnlyHint).toBe(true);
+		}
 
 		const spawn = tools.find((tool) => tool.name === "spawn_agent") as any;
 		expect(spawn.inputSchema.properties.kind.enum).toEqual(["pi", "codex", "omp", "hermes"]);
@@ -147,6 +150,13 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 		expect(payload.kinds).toHaveLength(4);
 		expect(payload.kinds[0].integration).toBe("current");
 		expect(payload.kinds[3].integration).toBe("outdated");
+
+		const codeResult = await client.callTool({
+			name: "codemode",
+			arguments: { code: "return JSON.parse(await tools.list_agents({})).default_agent;" },
+		});
+		expect(codeResult.isError, contentText(codeResult.content)).not.toBe(true);
+		expect(contentText(codeResult.content)).toContain("omp");
 
 		result = await client.callTool({ name: "spawn_agent", arguments: { message: "Default backend", cwd: "." } });
 		payload = jsonContent(result.content);

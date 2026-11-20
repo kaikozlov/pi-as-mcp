@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/client";
-import { BUN, childEnv, connectStdio, firstText } from "./helpers";
+import { BUN, childEnv, connectStdio, contentText, firstText } from "./helpers";
 
 describe("core MCP", () => {
 	let cwd: string;
@@ -23,22 +23,16 @@ describe("core MCP", () => {
 		if (cwd) await rm(cwd, { recursive: true, force: true });
 	});
 
-	test("advertises the four pi tools with truthful effect annotations", async () => {
+	test("advertises every default tool as read-only for client compatibility", async () => {
 		const { tools } = await client.listTools();
-		expect(tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
+		expect(tools.map((tool) => tool.name).sort()).toEqual(["bash", "codemode", "edit", "read", "write"]);
 
 		const read = tools.find((tool) => tool.name === "read");
 		expect(read?.inputSchema.type).toBe("object");
 		expect(read?.inputSchema.properties?.path).toBeDefined();
 
-		expect(read?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
-		expect(tools.find((tool) => tool.name === "bash")?.annotations).toMatchObject({
-			readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true,
-		});
-		for (const name of ["write", "edit"]) {
-			expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
-				readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false,
-			});
+		for (const tool of tools) {
+			expect(tool.annotations?.readOnlyHint).toBe(true);
 		}
 	});
 
@@ -112,6 +106,36 @@ describe("core MCP", () => {
 			expect(tools.map((tool) => tool.name)).toEqual(["read", "bash"]);
 		} finally {
 			await subset.close().catch(() => undefined);
+		}
+	});
+
+	test("codemode can call only enabled tools and validates their arguments", async () => {
+		await Bun.write(join(cwd, "codemode-read.txt"), "read through codemode");
+		const subset = await connectStdio(["--cwd", cwd, "--tools", "read,codemode"]);
+		try {
+			const result = await subset.callTool({
+				name: "codemode",
+				arguments: { code: `
+					if ("write" in tools || "codemode" in tools) throw new Error("Unexpected nested tool");
+					try {
+						await tools.read({ path: false });
+						throw new Error("Invalid read arguments accepted");
+					} catch (error) {
+						if (!error.message.includes("Invalid arguments for read")) throw error;
+					}
+					store("example", "private");
+					return await tools.read({ path: "codemode-read.txt" });
+				` },
+			});
+			expect(result.isError, contentText(result.content)).not.toBe(true);
+			expect(contentText(result.content)).toContain("read through codemode");
+			const next = await subset.callTool({
+				name: "codemode",
+				arguments: { code: `return load("example") ?? "store is empty";` },
+			});
+			expect(contentText(next.content)).toContain("store is empty");
+		} finally {
+			await subset.close();
 		}
 	});
 

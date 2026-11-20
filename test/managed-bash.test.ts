@@ -64,8 +64,8 @@ test("managed bash yields, survives server restart, polls, and preserves hard ti
 		expect(timeoutElapsed).toBeLessThan(1200);
 
 		const followup = await second.callTool({
-			name: "bash",
-			arguments: { command: "printf 'survived-managed-bash'" },
+			name: "codemode",
+			arguments: { code: `return await tools.bash({ command: "printf 'survived-managed-bash'" });` },
 		});
 		expect(followup.isError).not.toBe(true);
 		expect(contentText(followup.content)).toContain("survived-managed-bash");
