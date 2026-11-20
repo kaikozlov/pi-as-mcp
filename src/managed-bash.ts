@@ -29,8 +29,6 @@ interface ManagedBashInput {
 	kill?: boolean;
 }
 
-const LEGACY_SESSION_COMMAND_RE = /^:session\s+([0-9a-f-]{36})(?:\s+(kill))?\s*$/i;
-
 interface JobPaths {
 	dir: string;
 	command: string;
@@ -247,13 +245,11 @@ export function createManagedBashToolDefinition(cwd: string, maxSyncSeconds: num
 
 	base.description =
 		`Execute a bash command in ${cwd}. Commands that finish within ${maxSyncSeconds} seconds return normally. ` +
-		`Longer commands automatically continue in the background and return a session_id; poll them by calling bash with only session_id, ` +
-		`or terminate them with session_id plus kill=true. For clients using an older cached tool schema, command=\":session <id>\" polls ` +
-		`and command=\":session <id> kill\" terminates the same managed session. The optional timeout is a hard command lifetime in seconds, not the synchronous wait window.`;
+		`Longer commands continue in the background and return a session_id. Poll the job with only session_id. ` +
+		`To terminate the job, send session_id with kill=true. The optional timeout sets the maximum command lifetime in seconds.`;
 	base.promptGuidelines = [
-		`Bash automatically yields after ${maxSyncSeconds} seconds instead of killing long-running work. ` +
-		"When a call returns a session_id, poll that session with short follow-up bash calls until it completes; tmux is not required. " +
-		"If the client has a cached schema without session_id, use command=\":session <id>\" instead.",
+		`If the command is still running after ${maxSyncSeconds} seconds, Bash returns a session_id and continues the command in the background. ` +
+		"Poll with session_id until the job completes. You do not need tmux.",
 	];
 	base.parameters = {
 		type: "object",
@@ -271,11 +267,6 @@ export function createManagedBashToolDefinition(cwd: string, maxSyncSeconds: num
 	} as any;
 
 	base.execute = async (_toolCallId, raw: ManagedBashInput, signal) => {
-		const legacySession = typeof raw.command === "string" ? raw.command.match(LEGACY_SESSION_COMMAND_RE) : null;
-		if (legacySession) {
-			if (raw.timeout !== undefined) throw new Error("timeout is only valid when starting a command");
-			return pollJob(legacySession[1]!, legacySession[2] === "kill");
-		}
 		if (raw.session_id !== undefined) {
 			if (raw.timeout !== undefined) throw new Error("timeout is only valid when starting a command");
 			return pollJob(raw.session_id, raw.kill === true);
@@ -318,8 +309,7 @@ export function createManagedBashToolDefinition(cwd: string, maxSyncSeconds: num
 						text: formatOutput(
 							paths,
 							`[Command is still running after ${maxSyncSeconds} seconds. bash session_id=${id}, pid=${pid}. ` +
-							`Poll with {"session_id":"${id}"} or cached-schema fallback {"command":":session ${id}"}; ` +
-							`terminate with {"session_id":"${id}","kill":true} or {"command":":session ${id} kill"}. Full output: ${paths.log}]`,
+							`Poll with {"session_id":"${id}"}. Terminate with {"session_id":"${id}","kill":true}. Full output: ${paths.log}]`,
 						),
 					}],
 					details: undefined,

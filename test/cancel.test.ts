@@ -18,7 +18,6 @@ test("MCP cancellation kills the bash process tree without killing the server", 
 			await expect(
 				client.callTool(
 					{ name: "bash", arguments: { command } },
-					undefined,
 					{ signal: controller.signal },
 				),
 			).rejects.toBeDefined();

@@ -6,11 +6,21 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import {
+	classifyInboundRequest,
+	createMcpHandler,
+	isJSONRPCRequest,
+	PROTOCOL_VERSION_META_KEY,
+	ProtocolError,
+	ProtocolErrorCode,
+	Server,
+	UnsupportedProtocolVersionError,
+	type JsonSchemaType,
+	type JsonSchemaValidator,
+	type Tool,
+} from "@modelcontextprotocol/server";
+import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/server/validators/ajv";
 import {
 	createCloudflareAccessGuard,
 	parseCloudflareAccessConfig,
@@ -92,6 +102,11 @@ const VERSION = PACKAGE.version;
 const DEFAULT_HTTP_HOST = "127.0.0.1";
 const DEFAULT_HTTP_PORT = 3333;
 const DEFAULT_HTTP_PATH = "/mcp";
+const MODERN_PROTOCOL_VERSION = "2026-07-28";
+const MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024;
+const SSE_OPEN_COMMENT = new TextEncoder().encode(":\n\n");
+const TOOL_CALL_LIMIT = 60;
+const TOOL_CALL_WINDOW_MS = 10_000;
 
 function printHelp(): void {
 	const out = process.stdout;
@@ -261,16 +276,21 @@ function toMcpContent(
 	});
 }
 
+type PiResult = {
+	content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>;
+	isError?: boolean;
+};
+
 type PiExecute = (
 	toolCallId: string,
 	params: unknown,
-	signal: AbortSignal | undefined,
+	signal: AbortSignal,
 	onUpdate: undefined,
 	ctx: undefined,
-) => Promise<{ content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }>;
+) => Promise<PiResult>;
 
-function cleanSchema(tool: McpTool): Record<string, unknown> {
-	return JSON.parse(JSON.stringify(tool.definition.parameters)) as Record<string, unknown>;
+function toolError(text: string) {
+	return { content: [{ type: "text" as const, text }], isError: true };
 }
 
 async function createHerdrRuntime(opts: Options): Promise<HerdrRuntime | undefined> {
@@ -302,15 +322,20 @@ async function createHerdrRuntime(opts: Options): Promise<HerdrRuntime | undefin
 	}
 }
 
-function createPiMcpServer(opts: Options, herdr: HerdrRuntime | undefined): Server {
+function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined): () => Server {
 	const enabledSelectors = herdr
 		? opts.tools
 		: opts.tools.filter((tool) => PI_TOOL_NAMES.includes(tool as (typeof PI_TOOL_NAMES)[number]));
 	const tools = createTools(opts.cwd, enabledSelectors, { bashMaxSyncSeconds: opts.bashMaxSyncSeconds, herdr, maxAgents: opts.maxAgents, defaultAgent: opts.defaultAgent });
-	const byName = new Map<string, McpTool>(tools.map((tool) => [tool.name, tool]));
-	const schemas = new Map<string, Record<string, unknown>>(tools.map((tool) => [tool.name, cleanSchema(tool)]));
 	const validatorProvider = new AjvJsonSchemaValidator();
-	const validators = new Map([...schemas].map(([name, schema]) => [name, validatorProvider.getValidator(schema)] as const));
+	const byName = new Map<string, { definition: McpTool["definition"]; validate: JsonSchemaValidator<unknown> }>();
+	const catalog = tools.map(({ name, definition }): Tool => {
+		const inputSchema = JSON.parse(JSON.stringify(definition.parameters)) as Tool["inputSchema"] & JsonSchemaType;
+		byName.set(name, { definition, validate: validatorProvider.getValidator(inputSchema) });
+		return { name, description: definition.description, inputSchema, annotations: { ...MCP_ANNOTATIONS[name], title: definition.label } };
+	});
+	let windowEndsAt = 0;
+	let remainingCalls = 0;
 	const guidelines = tools.flatMap(({ definition }) => definition.promptGuidelines ?? []);
 	const instructions = [
 		`pi-as-mcp tools (${tools.map((tool) => tool.name).join(", ")}) are available in ${opts.cwd}.`,
@@ -322,51 +347,75 @@ function createPiMcpServer(opts: Options, herdr: HerdrRuntime | undefined): Serv
 				: []),
 		...guidelines,
 	].join("\n");
-	const server = new Server({ name: "pi-as-mcp", version: VERSION }, { capabilities: { tools: {} }, instructions });
+	return () => {
+		const server = new Server({ name: "pi-as-mcp", version: VERSION }, { capabilities: { tools: {} }, instructions });
+		server.setRequestHandler("tools/list", async () => ({ tools: catalog }));
+		server.setRequestHandler("tools/call", async ({ params }, { mcpReq }) => {
+			const { name, arguments: args } = params;
+			const requestId = String(mcpReq.id);
+			const startedAt = Date.now();
+			logLifecycle("tool_call_start", { tool: name, request_id: requestId });
+			try {
+				const tool = byName.get(name);
+				if (!tool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
 
-	server.setRequestHandler(ListToolsRequestSchema, async () => ({
-		tools: tools.map(({ name, definition }) => ({ name, description: definition.description, inputSchema: schemas.get(name) ?? {}, annotations: { ...MCP_ANNOTATIONS[name], title: definition.label } })),
-	}));
-	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-		const { name, arguments: args } = request.params;
-		const requestId = String(extra.requestId ?? randomUUID());
-		const startedAt = Date.now();
-		logLifecycle("tool_call_start", { tool: name, request_id: requestId });
-		const tool = byName.get(name);
-		if (!tool) {
-			logLifecycle("tool_call_end", { tool: name, request_id: requestId, duration_ms: Date.now() - startedAt, unknown_tool: true });
-			return { content: [{ type: "text" as const, text: `Unknown tool: ${name}` }], isError: true };
-		}
-		try {
-			const rawParams = tool.definition.prepareArguments ? tool.definition.prepareArguments(args ?? {}) : (args ?? {});
-			const validate = validators.get(name);
-			if (!validate) throw new Error(`No argument validator registered for tool: ${name}`);
-			const validation = validate(rawParams);
-			if (!validation.valid) return { content: [{ type: "text" as const, text: `Invalid arguments for ${name}: ${validation.errorMessage}` }], isError: true };
-			const result = await (tool.definition.execute as unknown as PiExecute)(requestId, validation.data, extra.signal, undefined, undefined);
-			return { content: toMcpContent(result.content), isError: result.isError };
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return { content: [{ type: "text" as const, text: message }], isError: true };
-		} finally {
-			logLifecycle("tool_call_end", { tool: name, request_id: requestId, duration_ms: Date.now() - startedAt, aborted: extra.signal?.aborted ?? false });
-		}
-	});
-	return server;
+				const now = performance.now();
+				if (now >= windowEndsAt) {
+					windowEndsAt = now + TOOL_CALL_WINDOW_MS;
+					remainingCalls = TOOL_CALL_LIMIT;
+				}
+				if (remainingCalls === 0) return toolError("Tool call rate limit reached. Try again after 10 seconds.");
+				remainingCalls--;
+
+				const { definition, validate } = tool;
+				let result: PiResult;
+				try {
+					const rawParams = definition.prepareArguments ? definition.prepareArguments(args ?? {}) : (args ?? {});
+					const validation = validate(rawParams);
+					if (!validation.valid) return toolError(`Invalid arguments for ${name}: ${validation.errorMessage}`);
+					result = await (definition.execute as unknown as PiExecute)(requestId, validation.data, mcpReq.signal, undefined, undefined);
+				} catch (error) {
+					return toolError(error instanceof Error ? error.message : String(error));
+				}
+				return { content: toMcpContent(result.content), isError: result.isError };
+			} finally {
+				logLifecycle("tool_call_end", { tool: name, request_id: requestId, duration_ms: Date.now() - startedAt, aborted: mcpReq.signal.aborted });
+			}
+		});
+		return server;
+	};
 }
 
-async function runStdio(opts: Options, herdr: HerdrRuntime | undefined): Promise<void> {
-	const server = createPiMcpServer(opts, herdr);
-	await server.connect(new StdioServerTransport());
+class VersionCheckedStdioTransport extends StdioServerTransport {
+	override start(): Promise<void> {
+		const deliver = this.onmessage;
+		this.onmessage = (message) => {
+			// SDK 2.4.0 pins the era. It does not check every request's revision.
+			if (isJSONRPCRequest(message)) {
+				const requested = message.params?._meta?.[PROTOCOL_VERSION_META_KEY];
+				if (typeof requested === "string" && requested !== MODERN_PROTOCOL_VERSION &&
+					classifyInboundRequest({ httpMethod: "POST", body: message }).kind === "modern") {
+					const error = new UnsupportedProtocolVersionError({ requested, supported: [MODERN_PROTOCOL_VERSION] });
+					void this.send({
+						jsonrpc: "2.0", id: message.id,
+						error: { code: error.code, message: error.message, data: error.data },
+					}).catch((error) => this.onerror?.(error));
+					return;
+				}
+			}
+			deliver?.(message);
+		};
+		return super.start();
+	}
+}
+
+function runStdio(createServer: () => Server): void {
+	serveStdio(createServer, { legacy: "reject", transport: new VersionCheckedStdioTransport() });
 	logLifecycle("connected", { transport: "stdio" });
 }
 
 function jsonRpcError(status: number, code: number, message: string): Response {
-	return Response.json({
-		jsonrpc: "2.0",
-		error: { code, message },
-		id: null,
-	}, { status });
+	return Response.json({ jsonrpc: "2.0", error: { code, message } }, { status });
 }
 
 function normalizedAllowedHostname(value: string): string {
@@ -394,6 +443,20 @@ function validateHostHeader(request: Request, allowedHosts: ReadonlySet<string>)
 	return undefined;
 }
 
+function validateOriginHeader(request: Request, allowedHosts: ReadonlySet<string>): Response | undefined {
+	const origin = request.headers.get("origin");
+	if (origin === null) return undefined;
+	try {
+		const url = new URL(origin);
+		if ((url.protocol === "http:" || url.protocol === "https:") && url.origin === origin && allowedHosts.has(url.hostname)) {
+			return undefined;
+		}
+	} catch {
+		// Reject malformed origins, including opaque origins.
+	}
+	return jsonRpcError(403, -32000, "Origin is not allowed.");
+}
+
 async function withHttpLifecycle(
 	request: Request,
 	handle: () => Promise<Response>,
@@ -407,7 +470,6 @@ async function withHttpLifecycle(
 		request_id: requestId,
 		method: request.method,
 		path: requestPath,
-		has_session: request.headers.has("mcp-session-id"),
 	});
 
 	const finish = (status: number, closedEarly: boolean): void => {
@@ -441,6 +503,12 @@ async function withHttpLifecycle(
 
 	const reader = response.body.getReader();
 	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			// Give Bun bytes to flush before the first SDK event.
+			if (request.method === "POST" && response.headers.get("content-type") === "text/event-stream") {
+				controller.enqueue(SSE_OPEN_COMMENT);
+			}
+		},
 		async pull(controller) {
 			try {
 				const { done, value } = await reader.read();
@@ -467,7 +535,7 @@ async function withHttpLifecycle(
 	});
 }
 
-async function runHttp(opts: Options, herdr: HerdrRuntime | undefined): Promise<void> {
+async function runHttp(opts: Options, createServer: () => Server): Promise<void> {
 	if (opts.auth === "none" && opts.host !== "127.0.0.1" && opts.host !== "localhost" && opts.host !== "::1") {
 		throw new Error("Refusing unauthenticated HTTP mode on a non-loopback bind address");
 	}
@@ -478,76 +546,26 @@ async function runHttp(opts: Options, herdr: HerdrRuntime | undefined): Promise<
 	const accessGuard = opts.auth === "cloudflare-access"
 		? createCloudflareAccessGuard(parseCloudflareAccessConfig(process.env))
 		: undefined;
-	const sessions = new Map<string, {
-		transport: WebStandardStreamableHTTPServerTransport;
-		server: Server;
-		openedAt: number;
-	}>();
-
-	const createTransport = async (): Promise<{
-		transport: WebStandardStreamableHTTPServerTransport;
-		server: Server;
-	}> => {
-		const server = createPiMcpServer(opts, herdr);
-		let transport: WebStandardStreamableHTTPServerTransport;
-		transport = new WebStandardStreamableHTTPServerTransport({
-			sessionIdGenerator: () => randomUUID(),
-			onsessioninitialized: (sessionId) => {
-				sessions.set(sessionId, { transport, server, openedAt: Date.now() });
-				logLifecycle("http_session_open", {
-					session_id: sessionId,
-					active_sessions: sessions.size,
-				});
-			},
-			keepAliveMs: 15_000,
-		});
-		transport.onclose = () => {
-			const sessionId = transport.sessionId;
-			if (sessionId) {
-				const session = sessions.get(sessionId);
-				sessions.delete(sessionId);
-				logLifecycle("http_session_close", {
-					session_id: sessionId,
-					lifetime_ms: session ? Date.now() - session.openedAt : undefined,
-					active_sessions: sessions.size,
-				});
-			}
-			void server.close().catch(() => undefined);
-		};
-		await server.connect(transport);
-		return { transport, server };
-	};
+	const mcp = createMcpHandler(createServer, {
+		legacy: "reject",
+		responseMode: "sse",
+		keepAliveMs: 5_000,
+		maxRequestBodySize: MAX_HTTP_BODY_BYTES,
+	});
 
 	const handleMcp = async (request: Request): Promise<Response> => {
 		const authFailure = accessGuard ? await accessGuard(request) : undefined;
-		if (authFailure) return authFailure;
-
-		const sessionId = request.headers.get("mcp-session-id") ?? undefined;
-		if (sessionId) {
-			const session = sessions.get(sessionId);
-			if (!session) return jsonRpcError(404, -32001, "Unknown MCP session");
-			return session.transport.handleRequest(request);
-		}
-
-		if (request.method !== "POST") {
-			return new Response("Invalid or missing MCP session ID", { status: 400 });
-		}
-
-		const { transport } = await createTransport();
-		const response = await transport.handleRequest(request);
-		if (!transport.sessionId) {
-			await transport.close().catch(() => undefined);
-		}
-		return response;
+		return authFailure ?? mcp.fetch(request);
 	};
 
 	try {
 		Bun.serve({
 			hostname: opts.host,
 			port: opts.port,
+			maxRequestBodySize: MAX_HTTP_BODY_BYTES,
 			fetch: (request) => withHttpLifecycle(request, async () => {
-				const hostFailure = validateHostHeader(request, allowedHosts);
-				if (hostFailure) return hostFailure;
+				const rejected = validateHostHeader(request, allowedHosts) ?? validateOriginHeader(request, allowedHosts);
+				if (rejected) return rejected;
 
 				const pathname = new URL(request.url).pathname;
 				if (request.method === "GET" && pathname === "/healthz") {
@@ -555,7 +573,6 @@ async function runHttp(opts: Options, herdr: HerdrRuntime | undefined): Promise<
 						status: "ok",
 						name: "pi-as-mcp",
 						version: VERSION,
-						sessions: sessions.size,
 						uptime_seconds: Math.floor(process.uptime()),
 					});
 				}
@@ -582,8 +599,9 @@ async function main(): Promise<void> {
 	const opts = parseArgs(process.argv);
 	logLifecycle("starting", { cwd: opts.cwd, tools: opts.tools.join(","), herdr_session: opts.herdrSession, transport: opts.transport });
 	const herdr = await createHerdrRuntime(opts);
-	if (opts.transport === "stdio") await runStdio(opts, herdr);
-	else await runHttp(opts, herdr);
+	const createServer = createPiMcpServerFactory(opts, herdr);
+	if (opts.transport === "stdio") runStdio(createServer);
+	else await runHttp(opts, createServer);
 }
 
 main().catch((error) => {

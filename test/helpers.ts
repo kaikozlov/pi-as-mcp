@@ -1,8 +1,17 @@
 import { expect } from "bun:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 export const BUN = process.execPath;
+export const REVISION = "2026-07-28";
+export const VERSION_KEY = "io.modelcontextprotocol/protocolVersion";
+export const CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities";
+
+export function modernClient(name = "pi-as-mcp-test"): Client {
+	return new Client({ name, version: "0.0.0" }, {
+		versionNegotiation: { mode: { pin: REVISION } },
+	});
+}
 
 export function childEnv(extra: Record<string, string | undefined> = {}): Record<string, string> {
 	const env: Record<string, string> = {};
@@ -34,7 +43,7 @@ export async function connectStdio(
 		env: childEnv(extraEnv),
 		stderr: "inherit",
 	});
-	const client = new Client({ name, version: "0.0.0" });
+	const client = modernClient(name);
 	await client.connect(transport);
 	return client;
 }

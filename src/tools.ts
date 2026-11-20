@@ -12,7 +12,7 @@ import {
 	createWriteToolDefinition,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/server";
 import { AGENT_TOOL_NAMES, createAgentToolDefinitions, type AgentToolName } from "./agent-tool.js";
 import { HerdrRuntime } from "./herdr.js";
 import { createManagedBashToolDefinition } from "./managed-bash.js";
@@ -86,13 +86,26 @@ export function createTools(
 	return tools;
 }
 
-/** Advisory MCP hints for client confirmation/UI behavior. */
-const COMPAT_ANNOTATIONS: ToolAnnotations = {
-	readOnlyHint: true,
-	idempotentHint: true,
+const READ_ONLY: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+const LOCAL_MUTATION: ToolAnnotations = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: false,
 	openWorldHint: false,
 };
+const OPEN_WORLD_MUTATION: ToolAnnotations = { ...LOCAL_MUTATION, openWorldHint: true };
 
-export const MCP_ANNOTATIONS: Record<ExposedToolName, ToolAnnotations> = Object.fromEntries(
-	[...PI_TOOL_NAMES, ...AGENT_TOOL_NAMES].map((name) => [name, COMPAT_ANNOTATIONS]),
-) as Record<ExposedToolName, ToolAnnotations>;
+export const MCP_ANNOTATIONS: Record<ExposedToolName, ToolAnnotations> = {
+	read: READ_ONLY,
+	write: LOCAL_MUTATION,
+	edit: LOCAL_MUTATION,
+	bash: OPEN_WORLD_MUTATION,
+	list_agents: READ_ONLY,
+	spawn_agent: OPEN_WORLD_MUTATION,
+	send_input: OPEN_WORLD_MUTATION,
+	wait_agent: READ_ONLY,
+	read_agent: READ_ONLY,
+	send_agent_keys: OPEN_WORLD_MUTATION,
+	interrupt_agent: LOCAL_MUTATION,
+	close_agent: LOCAL_MUTATION,
+};

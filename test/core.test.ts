@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { BUN, childEnv, connectStdio, firstText } from "./helpers";
 
 describe("core MCP", () => {
@@ -23,7 +23,7 @@ describe("core MCP", () => {
 		if (cwd) await rm(cwd, { recursive: true, force: true });
 	});
 
-	test("advertises the four pi tools and compatibility annotations", async () => {
+	test("advertises the four pi tools with truthful effect annotations", async () => {
 		const { tools } = await client.listTools();
 		expect(tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
 
@@ -31,10 +31,14 @@ describe("core MCP", () => {
 		expect(read?.inputSchema.type).toBe("object");
 		expect(read?.inputSchema.properties?.path).toBeDefined();
 
-		for (const tool of tools) {
-			expect(tool.annotations?.readOnlyHint).toBe(true);
-			expect(tool.annotations?.idempotentHint).toBe(true);
-			expect(tool.annotations?.openWorldHint).toBe(false);
+		expect(read?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+		expect(tools.find((tool) => tool.name === "bash")?.annotations).toMatchObject({
+			readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true,
+		});
+		for (const name of ["write", "edit"]) {
+			expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+				readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false,
+			});
 		}
 	});
 
@@ -87,6 +91,10 @@ describe("core MCP", () => {
 		const result = await client.callTool({ name: "read", arguments: { path: 123 } });
 		expect(result.isError).toBe(true);
 		expect(firstText(result.content)).toMatch(/invalid arguments/i);
+	});
+
+	test("an unknown tool is a JSON-RPC invalid params error", async () => {
+		await expect(client.callTool({ name: "not-a-tool" })).rejects.toMatchObject({ code: -32602 });
 	});
 
 	test("tool implementation errors remain MCP tool errors", async () => {

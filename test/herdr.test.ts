@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { BUN, childEnv, firstText, jsonContent } from "./helpers";
+import type { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { BUN, childEnv, firstText, jsonContent, modernClient } from "./helpers";
 
 const assert = (condition: unknown, message: string) => {
 	expect(Boolean(condition), message).toBe(true);
@@ -37,7 +37,7 @@ async function connect(
 		}),
 		stderr: "inherit",
 	});
-	const client = new Client({ name: "test-herdr", version: "0.0.0" });
+	const client = modernClient("test-herdr");
 	await client.connect(transport);
 	return client;
 }

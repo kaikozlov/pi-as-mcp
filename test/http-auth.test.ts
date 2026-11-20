@@ -2,10 +2,9 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { BUN, childEnv, freePort, stopProcess, waitForHealth } from "./helpers";
+import { BUN, CAPABILITIES_KEY, REVISION, VERSION_KEY, childEnv, freePort, modernClient, stopProcess, waitForHealth } from "./helpers";
 
 setDefaultTimeout(15_000);
 
@@ -101,7 +100,7 @@ describe("Cloudflare Access authentication", () => {
 	});
 
 	test("accepts a valid Access assertion", async () => {
-		const client = new Client({ name: "test-http-auth", version: "0.0.0" });
+		const client = modernClient("test-http-auth");
 		const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
 			requestInit: {
 				headers: { "Cf-Access-Jwt-Assertion": await signToken(audience) },
@@ -115,5 +114,32 @@ describe("Cloudflare Access authentication", () => {
 		} finally {
 			await client.close().catch(() => undefined);
 		}
+	});
+
+	test("applies the same Access guard before modern dispatch", async () => {
+		const headers = new Headers({
+			accept: "application/json, text/event-stream",
+			"content-type": "application/json",
+			"mcp-protocol-version": "2026-07-28",
+			"mcp-method": "server/discover",
+		});
+		const body = JSON.stringify({
+			jsonrpc: "2.0", id: 1, method: "server/discover",
+			params: { _meta: {
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": {},
+			} },
+		});
+
+		const denied = await fetch(`${base}/mcp`, { method: "POST", headers, body });
+		expect(denied.status).toBe(403);
+		expect(denied.headers.has("www-authenticate")).toBe(false);
+		await denied.body?.cancel();
+
+		headers.set("cf-access-jwt-assertion", await signToken(audience));
+		const accepted = await fetch(`${base}/mcp`, { method: "POST", headers, body });
+		expect(accepted.status).toBe(200);
+		expect(accepted.headers.has("mcp-session-id")).toBe(false);
+		expect(await accepted.text()).toContain('"supportedVersions":["2026-07-28"]');
 	});
 });

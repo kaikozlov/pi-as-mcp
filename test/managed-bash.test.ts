@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { connectStdio, contentText } from "./helpers";
 
 async function connect(cwd: string): Promise<Client> {
@@ -21,8 +21,7 @@ test("managed bash yields, survives server restart, polls, and preserves hard ti
 	try {
 		first = await connect(cwd);
 		const instructions = first.getInstructions() ?? "";
-		expect(instructions).toContain("automatically yields after 0.2 seconds");
-		expect(instructions).toContain("tmux is not required");
+		expect(instructions).toContain("session_id");
 
 		const startedAt = performance.now();
 		const yielded = await first.callTool({
@@ -47,7 +46,7 @@ test("managed bash yields, survives server restart, polls, and preserves hard ti
 		second = await connect(cwd);
 		const completed = await second.callTool({
 			name: "bash",
-			arguments: { command: `:session ${sessionId}` },
+			arguments: { session_id: sessionId },
 		});
 		const completedText = contentText(completed.content);
 		expect(completed.isError).not.toBe(true);

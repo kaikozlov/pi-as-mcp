@@ -42,7 +42,7 @@ bun run setup
 
 `bun run setup` installs dependencies and writes the local deployment configuration to the gitignored `server/.env`. There is no build step; Bun executes the TypeScript source directly.
 
-The Cloudflare Tunnel should route the public MCP hostname to the local HTTP origin, normally `http://127.0.0.1:3333`. Cloudflare Access provides authentication at the edge; pi-as-mcp verifies the injected Access JWT before accepting MCP requests.
+The Cloudflare Tunnel should route the public MCP hostname to the local HTTP origin, normally `http://127.0.0.1:3333`. Cloudflare Access authenticates at the edge; pi-as-mcp verifies the injected Access JWT, but does not provide MCP OAuth discovery or Protected Resource Metadata.
 
 ## Day-to-day commands
 
@@ -54,8 +54,6 @@ bun run restart
 bun run stop
 ```
 
-These commands operate the deployment as one service: the local MCP HTTP server plus cloudflared. The implementation lives in `scripts/service.sh`; package.json does not expose separate implementation-level lifecycle commands.
-
 For development:
 
 ```bash
@@ -63,8 +61,6 @@ bun run dev
 bun check
 bun test
 ```
-
-`bun check` and `bun test` are native Bun commands, not package-script wrappers. The package scripts are reserved for application lifecycle commands.
 
 ## Configuration
 
@@ -116,13 +112,11 @@ Herdr owns the agent PTYs and workspaces, so an MCP connection or pi-as-mcp proc
 
 `PI_MCP_BASH_MAX_SYNC_SECONDS` controls when a long bash invocation is handed off to a durable local job instead of holding one HTTP request open indefinitely.
 
-When the handoff window is exceeded, the tool returns a `session_id`. Poll that session with another `bash` call containing the session ID; use `kill=true` to terminate it. An explicit `timeout` remains a hard command lifetime.
+If the command runs past the handoff window, `bash` returns a `session_id`. Poll the job with only `session_id`. To terminate the job, send `session_id` with `kill: true`. The optional `timeout` sets the maximum command lifetime.
 
 Omit `PI_MCP_BASH_MAX_SYNC_SECONDS` to retain pi's fully synchronous bash behavior.
 
 ## Generic stdio use
-
-The server still supports ordinary local stdio MCP clients:
 
 ```bash
 bun src/index.ts --cwd /path/to/workspace
@@ -132,66 +126,9 @@ Or configure the client to launch `src/index.ts` with Bun directly.
 
 ## Testing
 
-Tests use Bun's native test runner and `bun:test` APIs:
-
 ```bash
 bun check
 bun test
-```
-
-Bun discovers the TypeScript tests under `test/*.test.ts` using `bunfig.toml`. A preload removes live `PI_MCP_*` and Cloudflare Access environment variables before the suite runs so tests cannot accidentally inherit the deployed server configuration.
-
-The suite covers core MCP tools and CLI behavior, cancellation/process-tree handling, managed-bash persistence, Herdr integration, Streamable HTTP, Cloudflare Access authentication, and shell-script syntax.
-
-Useful native runner modes work without additional project scripts:
-
-```bash
-bun test --watch
-bun test --coverage
-bun test --test-name-pattern cancellation
-```
-
-## Security
-
-This server provides local code execution by design.
-
-- `read`, `write`, and `edit` accept absolute filesystem paths.
-- `bash` executes commands with the permissions of the pi-as-mcp process.
-- persistent agents can execute commands and modify files according to their own configuration.
-- `--cwd` does not confine filesystem access.
-
-Keep the HTTP origin bound to loopback and expose it through authenticated Cloudflare Access.
-
-MCP tool annotations are advisory client-compatibility metadata, not an authorization boundary.
-
-## Source layout
-
-```text
-src/
-  index.ts
-  tools.ts
-  managed-bash.ts
-  herdr.ts
-  agent-catalog.ts
-  agent-tool.ts
-
-scripts/
-  setup.sh
-  service.sh
-
-test/
-  setup.ts
-  helpers.ts
-  core.test.ts
-  cancel.test.ts
-  managed-bash.test.ts
-  herdr.test.ts
-  http.test.ts
-  http-auth.test.ts
-  shell.test.ts
-
-server/
-  .env.example
 ```
 
 ## License
