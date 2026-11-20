@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import {
 	classifyInboundRequest,
 	createMcpHandler,
+	isJSONRPCErrorResponse,
 	isJSONRPCRequest,
 	PROTOCOL_VERSION_META_KEY,
 	ProtocolError,
@@ -457,6 +458,29 @@ function validateOriginHeader(request: Request, allowedHosts: ReadonlySet<string
 	return jsonRpcError(403, -32000, "Origin is not allowed.");
 }
 
+function loggedProtocolVersion(value: unknown): string | undefined {
+	return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
+}
+
+async function httpFailureFields(request: Request, response: Response): Promise<LifecycleFields> {
+	const body: unknown = await response.clone().json().catch(() => undefined);
+	if (!isJSONRPCErrorResponse(body)) return {};
+
+	const method = request.headers.get("mcp-method");
+	const { code, data } = body.error;
+	const requested = code === ProtocolErrorCode.UnsupportedProtocolVersion
+		? (data as { requested?: unknown } | undefined)?.requested
+		: undefined;
+	return {
+		mcp_error_code: code,
+		mcp_method_header: method && /^(?:initialize|ping|[a-z]\w{0,31}(?:\/[a-z]\w{0,31}){1,2})$/.test(method)
+			? method
+			: undefined,
+		mcp_version_header: loggedProtocolVersion(request.headers.get("mcp-protocol-version")),
+		mcp_requested_version: loggedProtocolVersion(requested),
+	};
+}
+
 async function withHttpLifecycle(
 	request: Request,
 	handle: () => Promise<Response>,
@@ -465,6 +489,7 @@ async function withHttpLifecycle(
 	const startedAt = Date.now();
 	const requestPath = new URL(request.url).pathname;
 	let ended = false;
+	let failureFields: LifecycleFields | undefined;
 
 	logLifecycle("http_request_start", {
 		request_id: requestId,
@@ -482,6 +507,7 @@ async function withHttpLifecycle(
 			status,
 			duration_ms: Date.now() - startedAt,
 			closed_early: closedEarly,
+			...failureFields,
 		});
 	};
 
@@ -494,6 +520,9 @@ async function withHttpLifecycle(
 			name: error instanceof Error ? error.name : "unknown",
 		});
 		response = jsonRpcError(500, -32603, "Internal server error");
+	}
+	if (response.status >= 400 && response.headers.get("content-type")?.startsWith("application/json")) {
+		failureFields = await httpFailureFields(request, response);
 	}
 
 	if (!response.body) {

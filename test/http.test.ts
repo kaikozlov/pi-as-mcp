@@ -157,7 +157,7 @@ describe("Streamable HTTP transport", () => {
 
 		await expectError(await modernPost("tools/list", {}, { "mcp-method": "tools/call" }), 400, -32020);
 		await expectError(await modernPost("tools/list", {}, { "mcp-protocol-version": null }), 400, -32020);
-		await expectError(await modernPost("tools/call", { name: "read" }, { "mcp-name": null }), 400, -32020);
+		await expectError(await modernPost("tools/call", { name: "private-tool-name" }, { "mcp-name": null }), 400, -32020);
 		await expectError(await modernPost("tools/list", { _meta: { [VERSION_KEY]: REVISION } }), 400, -32602);
 
 		const legacyInitialize = await fetch(`${base}/mcp`, {
@@ -182,6 +182,17 @@ describe("Streamable HTTP transport", () => {
 		expect(await readRpc(await modernPost("tools/call", { name: "read", arguments: { path: false } }))).toMatchObject({
 			result: { resultType: "complete", isError: true },
 		});
+
+		const log = await Bun.file(logPath).text();
+		const requests = log.trimEnd().split("\n").map((line) => JSON.parse(line))
+			.filter((event) => event.event === "http_request_end" && event.method === "POST" && event.status === 400);
+		expect(requests).toContainEqual(expect.objectContaining({
+			mcp_error_code: -32022, mcp_requested_version: "2025-06-18",
+		}));
+		expect(requests).toContainEqual(expect.objectContaining({
+			mcp_error_code: -32020, mcp_method_header: "tools/call", mcp_version_header: REVISION,
+		}));
+		expect(log).not.toContain("private-tool-name");
 		expect((await client.listTools()).tools).toHaveLength(4);
 	});
 
