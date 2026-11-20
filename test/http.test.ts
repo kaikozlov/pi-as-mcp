@@ -119,11 +119,11 @@ describe("Streamable HTTP transport", () => {
 			result: {
 				resultType: "complete", ttlMs: 0, cacheScope: "private",
 				tools: [
-					expect.objectContaining({ name: "read" }),
-					expect.objectContaining({ name: "write" }),
-					expect.objectContaining({ name: "edit" }),
-					expect.objectContaining({ name: "bash" }),
-					expect.objectContaining({ name: "codemode" }),
+					expect.objectContaining({ name: "read", description: expect.stringContaining("`tools.read(args)`") }),
+					expect.objectContaining({ name: "write", description: expect.stringContaining("`tools.write(args)`") }),
+					expect.objectContaining({ name: "edit", description: expect.stringContaining("`tools.edit(args)`") }),
+					expect.objectContaining({ name: "bash", description: expect.stringContaining("`tools.bash(args)`") }),
+					expect.objectContaining({ name: "codemode", description: expect.stringContaining("in the `code` argument") }),
 				],
 			},
 		});

@@ -102,18 +102,16 @@ export function createTools(
 		const api = {
 			registerTool: (tool) => { registered.push(tool); },
 			getAllTools: () => available,
+			getSettings: () => ({}),
 			appendEntry(type, data) {
 				const session = sessions.getStore();
 				if (!session) throw new Error("No active Code Mode call.");
 				session.appendCustomEntry(type, data);
 			},
-		} satisfies Pick<ExtensionAPI, "registerTool" | "getAllTools" | "appendEntry">;
+		} satisfies Pick<ExtensionAPI, "registerTool" | "getAllTools" | "getSettings" | "appendEntry">;
 		createCodemodeExtension({ models: false, mode: "on" })(api as ExtensionAPI);
 		const [definition] = registered;
 		if (!definition) throw new Error("Pi did not register codemode.");
-		definition.description = definition.description
-			.replace("The input is raw JavaScript (not JSON, no code fence), run", "Put JavaScript in the `code` argument without code fences. The code runs")
-			.replace("keep JSON values across codemode calls.", "keep JSON values in the current script.");
 		const execute = definition.execute;
 		definition.execute = (id, args, signal, onUpdate, context) => {
 			// Keep Pi's store isolated to this MCP call.

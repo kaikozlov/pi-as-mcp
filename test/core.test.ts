@@ -104,6 +104,9 @@ describe("core MCP", () => {
 		try {
 			const { tools } = await subset.listTools();
 			expect(tools.map((tool) => tool.name)).toEqual(["read", "bash"]);
+			for (const tool of tools) {
+				expect(tool.description).not.toContain(`tools.${tool.name}(args)`);
+			}
 		} finally {
 			await subset.close().catch(() => undefined);
 		}

@@ -318,15 +318,41 @@ function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined
 		? opts.tools
 		: opts.tools.filter((tool) => PI_TOOL_NAMES.includes(tool as (typeof PI_TOOL_NAMES)[number]));
 	const tools = createTools(opts.cwd, enabledSelectors, { bashMaxSyncSeconds: opts.bashMaxSyncSeconds, herdr, maxAgents: opts.maxAgents, defaultAgent: opts.defaultAgent });
+	const codemode = tools.find(({ name }) => name === "codemode")?.definition;
+	const declared: ExtensionToolContext["tools"] = codemode
+		? tools.map(({ name, definition }) => ({
+			name,
+			label: definition.label,
+			description: definition.description,
+			parameters: definition.parameters,
+			outputSchema: definition.outputSchema,
+			execute: (id, args, signal) => invokeTool(name, args, id, signal),
+		}))
+		: [];
+	const callable = declared.filter(({ name }) => name !== "codemode");
+	const descriptions = codemode?.prepareLoadout?.({
+		declared,
+		callable,
+		registered: declared,
+		getExposure: (name) => name === "codemode" ? "model-only" : "direct",
+		getNamespace: (name) => tools.find((tool) => tool.name === name)?.definition.namespace,
+		getPromptGuidelines: (name) => tools.find((tool) => tool.name === name)?.definition.promptGuidelines ?? [],
+	})?.descriptions;
 	const validatorProvider = new AjvJsonSchemaValidator();
 	const byName = new Map<string, { definition: McpTool["definition"]; validate: JsonSchemaValidator<unknown> }>();
 	const catalog = tools.map(({ name, definition }): Tool => {
 		const inputSchema = JSON.parse(JSON.stringify(definition.parameters)) as Tool["inputSchema"] & JsonSchemaType;
 		byName.set(name, { definition, validate: validatorProvider.getValidator(inputSchema) });
+		let description = descriptions?.[name] ?? definition.description;
+		if (name === "codemode") {
+			description = description
+				.replace("The input is raw JavaScript (not JSON, no code fence), run", "Put JavaScript in the `code` argument without code fences. The code runs")
+				.replace("keep JSON values across codemode calls.", "keep JSON values in the current script.");
+		}
 		// ChatGPT can stop using tools in an existing chat without this hint. It does not restrict execution.
 		return {
 			name,
-			description: definition.description,
+			description,
 			inputSchema,
 			annotations: { ...MCP_ANNOTATIONS[name], title: definition.label, readOnlyHint: true },
 		};
@@ -344,16 +370,6 @@ function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined
 				: []),
 		...guidelines,
 	].join("\n");
-	const callable: ExtensionToolContext["tools"] = byName.has("codemode")
-		? tools.filter(({ name }) => name !== "codemode").map(({ name, definition }) => ({
-			name,
-			label: definition.label,
-			description: definition.description,
-			parameters: definition.parameters,
-			outputSchema: definition.outputSchema,
-			execute: (id, args, signal) => invokeTool(name, args, id, signal),
-		}))
-		: [];
 
 	function codemodeContext(requestId: string, signal: AbortSignal | undefined): ExtensionToolContext {
 		let nextCall = 0;
