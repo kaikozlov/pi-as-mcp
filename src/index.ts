@@ -104,6 +104,7 @@ const VERSION = PACKAGE.version;
 const DEFAULT_HTTP_HOST = "127.0.0.1";
 const DEFAULT_HTTP_PORT = 3333;
 const DEFAULT_HTTP_PATH = "/mcp";
+const DEFAULT_TOOLS = ["read", "write", "edit", "bash"] as const satisfies readonly ToolSelector[];
 const MODERN_PROTOCOL_VERSION = "2026-07-28";
 const MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024;
 const SSE_OPEN_COMMENT = new TextEncoder().encode(":\n\n");
@@ -118,7 +119,8 @@ function printHelp(): void {
 	out.write("  -C, --cwd <dir>          Base directory for relative paths.\n");
 	out.write("                           Default: $PI_MCP_CWD, or process cwd.\n");
 	out.write("  -T, --tools <list>       Comma-separated subset of: " + TOOL_SELECTORS.join(", ") + "\n");
-	out.write("                           Default: $PI_MCP_TOOLS, or all enabled tools.\n");
+	out.write("                           Default: $PI_MCP_TOOLS, or " + DEFAULT_TOOLS.join(", ") + ".\n");
+	out.write("                           The default also includes agent when Herdr is configured.\n");
 	out.write("      --bash-max-sync-seconds <n>\n");
 	out.write("                           Optional synchronous wait before managed background handoff.\n");
 	out.write("                           Default: $PI_MCP_BASH_MAX_SYNC_SECONDS, or native unlimited bash.\n");
@@ -210,10 +212,9 @@ function parseArgs(argv: readonly string[]): Options {
 	const envDefaultAgent = process.env.PI_MCP_DEFAULT_AGENT?.trim();
 	const envHerdrSession = process.env.PI_MCP_HERDR_SESSION?.trim();
 	const envHerdrBin = process.env.PI_MCP_HERDR_BIN?.trim();
-	let toolsExplicit = !!envTools;
 	const opts: Options = {
 		cwd: envCwd || process.cwd(),
-		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : envHerdrSession ? [...PI_TOOL_NAMES, "agent"] : [...PI_TOOL_NAMES],
+		tools: envTools ? parseToolList(envTools, "$PI_MCP_TOOLS") : [],
 		bashMaxSyncSeconds: envBashMaxSync ? parsePositiveSeconds(envBashMaxSync, "$PI_MCP_BASH_MAX_SYNC_SECONDS") : undefined,
 		maxAgents: parseNonNegativeInteger(envMaxAgents, "$PI_MCP_MAX_AGENTS"),
 		defaultAgent: envDefaultAgent || undefined,
@@ -235,7 +236,7 @@ function parseArgs(argv: readonly string[]): Options {
 			case "-h": case "--help": printHelp(); process.exit(0); break;
 			case "-V": case "--version": process.stdout.write(`${VERSION}\n`); process.exit(0); break;
 			case "-C": case "--cwd": { const value = next(); if (!value) throw new Error(`${arg} requires a directory path`); opts.cwd = value; break; }
-			case "-T": case "--tools": { const value = next(); if (!value) throw new Error(`${arg} requires a comma-separated tool list`); opts.tools = parseToolList(value, arg); toolsExplicit = true; break; }
+			case "-T": case "--tools": { const value = next(); if (!value) throw new Error(`${arg} requires a comma-separated tool list`); opts.tools = parseToolList(value, arg); break; }
 			case "--bash-max-sync-seconds": { const value = next(); if (!value) throw new Error(`${arg} requires a positive number of seconds`); opts.bashMaxSyncSeconds = parsePositiveSeconds(value, arg); break; }
 			case "--max-agents": { const value = next(); if (value === undefined) throw new Error(`${arg} requires a non-negative integer`); opts.maxAgents = parseNonNegativeInteger(value, arg); break; }
 			case "--default-agent": { const value = next()?.trim(); if (!value) throw new Error(`${arg} requires an agent kind`); opts.defaultAgent = value; break; }
@@ -251,7 +252,7 @@ function parseArgs(argv: readonly string[]): Options {
 		}
 	}
 
-	if (!toolsExplicit) opts.tools = opts.herdrSession ? [...PI_TOOL_NAMES, "agent"] : [...PI_TOOL_NAMES];
+	if (opts.tools.length === 0) opts.tools = opts.herdrSession ? [...DEFAULT_TOOLS, "agent"] : [...DEFAULT_TOOLS];
 	const wantsAgent = opts.tools.includes("agent") || opts.tools.some((tool) => !PI_TOOL_NAMES.includes(tool as (typeof PI_TOOL_NAMES)[number]));
 	if (wantsAgent && !opts.herdrSession) throw new Error("Agent tools require --herdr-session or $PI_MCP_HERDR_SESSION");
 	if (opts.herdrSession === "default") throw new Error("pi-as-mcp requires a dedicated named Herdr session; 'default' is not allowed");
@@ -345,6 +346,8 @@ function createPiMcpServerFactory(opts: Options, herdr: HerdrRuntime | undefined
 		byName.set(name, { definition, validate: validatorProvider.getValidator(inputSchema) });
 		let description = descriptions?.[name] ?? definition.description;
 		if (name === "codemode") {
+			// MCP takes a JSON argument object and has no standard field for Pi's raw-input grammar.
+			// See https://github.com/modelcontextprotocol/modelcontextprotocol/issues/3238
 			description = description
 				.replace("The input is raw JavaScript (not JSON, no code fence), run", "Put JavaScript in the `code` argument without code fences. The code runs")
 				.replace("keep JSON values across codemode calls.", "keep JSON values in the current script.");

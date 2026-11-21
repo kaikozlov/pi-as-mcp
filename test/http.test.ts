@@ -70,6 +70,7 @@ describe("Streamable HTTP transport", () => {
 			"--host", "127.0.0.1",
 			"--port", String(port),
 			"--cwd", cwd,
+			"--tools", "read,write,edit,bash,codemode",
 		], {
 			env: childEnv({ PI_MCP_LOG_FILE: logPath }),
 			stdout: "ignore",

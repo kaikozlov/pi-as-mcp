@@ -122,7 +122,9 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 	await chmod(fakeHerdr, 0o755);
 
 	try {
-		const client = await connect(cwd, fakeHerdr, state, log);
+		const client = await connect(cwd, fakeHerdr, state, log, {
+			PI_MCP_TOOLS: "read,write,edit,bash,agent,codemode",
+		});
 		clients.push(client);
 
 		const { tools } = await client.listTools();
@@ -235,7 +237,9 @@ console.error(JSON.stringify({error:{code:"unsupported",message:"unsupported fak
 
 		const client2 = await connect(cwd, fakeHerdr, state, log);
 		clients.push(client2);
-		await client2.listTools();
+		const defaults = (await client2.listTools()).tools.map((tool) => tool.name);
+		expect(defaults).toContain("spawn_agent");
+		expect(defaults).not.toContain("codemode");
 		await client2.close();
 		clients.pop();
 

@@ -25,7 +25,7 @@ describe("core MCP", () => {
 
 	test("advertises every default tool as read-only for client compatibility", async () => {
 		const { tools } = await client.listTools();
-		expect(tools.map((tool) => tool.name).sort()).toEqual(["bash", "codemode", "edit", "read", "write"]);
+		expect(tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
 
 		const read = tools.find((tool) => tool.name === "read");
 		expect(read?.inputSchema.type).toBe("object");

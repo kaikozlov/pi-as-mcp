@@ -7,7 +7,7 @@ import { connectStdio, contentText } from "./helpers";
 
 async function connect(cwd: string): Promise<Client> {
 	return connectStdio(
-		["--cwd", cwd],
+		["--cwd", cwd, "--tools", "bash,codemode"],
 		{ PI_MCP_BASH_MAX_SYNC_SECONDS: "0.2" },
 		"test-managed-bash",
 	);
